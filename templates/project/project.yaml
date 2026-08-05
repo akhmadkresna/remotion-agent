@@ -1,0 +1,13 @@
+id: episode-name
+sources:
+  cam: raw/cam.mp4
+  # screen: raw/screen.mp4
+style: tutorial
+asr:
+  backend: auto
+  model: small
+  language: id
+fps: 30
+aspect: "16:9"
+width: 1920
+height: 1080

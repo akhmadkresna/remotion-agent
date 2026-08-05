@@ -1,0 +1,7 @@
+{
+  "folders": [
+    { "path": ".", "name": "episode" },
+    { "path": "../remotion-agent", "name": "framework" }
+  ],
+  "settings": {}
+}

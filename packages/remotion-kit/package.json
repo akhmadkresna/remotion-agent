@@ -1,0 +1,24 @@
+{
+  "name": "@agentic-editor/remotion-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts AgenticTimeline out/final.mp4",
+    "build": "remotion compositions src/index.ts"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.241",
+    "@remotion/media-utils": "^4.0.241",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.241",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "^5.7.2"
+  }
+}

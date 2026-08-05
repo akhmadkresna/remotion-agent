@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgenticEditorTranscript",
+  "type": "object",
+  "required": ["language", "backend", "model", "words"],
+  "properties": {
+    "language": { "type": "string" },
+    "backend": { "type": "string" },
+    "model": { "type": "string" },
+    "words": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["start", "end"],
+        "properties": {
+          "type": { "type": "string" },
+          "word": { "type": "string" },
+          "text": { "type": "string" },
+          "start": { "type": "number" },
+          "end": { "type": "number" }
+        }
+      }
+    },
+    "segments": { "type": "array" }
+  }
+}

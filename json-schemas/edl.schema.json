@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgenticEditorEdl",
+  "type": "object",
+  "required": ["sources", "ranges"],
+  "properties": {
+    "sources": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "ranges": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["source", "start", "end"],
+        "properties": {
+          "source": { "type": "string" },
+          "start": { "type": "number" },
+          "end": { "type": "number" },
+          "note": { "type": "string" }
+        }
+      }
+    }
+  }
+}

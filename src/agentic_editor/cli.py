@@ -1,0 +1,279 @@
+"""ae CLI — doctor, new, ingest, cut, cover, compose, qa, promote-check."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import sys
+from pathlib import Path
+
+from agentic_editor import __version__
+from agentic_editor.asr.backends import (
+    faster_whisper_available,
+    resolve_backend,
+    whisper_cpp_binary,
+)
+from agentic_editor.asr.ingest import ingest_episode
+from agentic_editor.compose import prepare_compose, render_compose, run_studio
+from agentic_editor.cover import example_cover, write_timeline
+from agentic_editor.cover import build_timeline_from_edl_and_cover
+from agentic_editor.editor.edl import example_edl, load_edl
+from agentic_editor.editor.qa import qa_episode_preview
+from agentic_editor.editor.render import render_edl
+from agentic_editor.paths import framework_home, resolve_episode
+from agentic_editor.project import load_project
+
+
+def cmd_doctor(_: argparse.Namespace) -> int:
+    home = framework_home()
+    print(f"agentic-editor {__version__}")
+    print(f"AGENTIC_EDITOR_HOME = {home}")
+    print()
+
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    print(f"ffmpeg:  {'OK  ' + ffmpeg if ffmpeg else 'MISSING'}")
+    print(f"ffprobe: {'OK  ' + ffprobe if ffprobe else 'MISSING'}")
+
+    node = shutil.which("node")
+    pnpm = shutil.which("pnpm")
+    print(f"node:    {'OK  ' + node if node else 'MISSING'}")
+    print(f"pnpm:    {'OK  ' + pnpm if pnpm else 'MISSING (needed for Remotion)'}")
+
+    auto = resolve_backend("auto")
+    print(f"\nASR auto backend on this machine: {auto}")
+
+    wbin = whisper_cpp_binary()
+    print(f"whisper.cpp CLI: {'OK  ' + wbin if wbin else 'MISSING (brew install whisper-cpp)'}")
+    fw = faster_whisper_available()
+    print(f"faster-whisper:  {'OK' if fw else 'MISSING (uv sync)'}")
+
+    models = home / "models"
+    if models.is_dir():
+        bins = list(models.glob("ggml-*.bin"))
+        print(f"models/: {len(bins)} ggml file(s) in {models}")
+    else:
+        print(f"models/: (create {models} and download ggml-small.bin for whisper.cpp)")
+
+    kit = home / "packages" / "remotion-kit" / "package.json"
+    print(f"remotion-kit: {'OK' if kit.is_file() else 'MISSING'}")
+
+    print("\nInstall tips:")
+    print("  Mac:     brew install whisper-cpp ffmpeg")
+    print("           download ggml-small.bin into $AGENTIC_EDITOR_HOME/models/")
+    print("  Windows: uv sync  (faster-whisper); install CUDA ctranslate2 if GPU")
+    print("  Both:    export AGENTIC_EDITOR_HOME=" + str(home))
+    print("           ln -s \"$AGENTIC_EDITOR_HOME/skills/agentic-editor\" ~/.cursor/skills/agentic-editor")
+    return 0 if ffmpeg and ffprobe else 1
+
+
+def cmd_new(args: argparse.Namespace) -> int:
+    episode = resolve_episode(args.path)
+    home = framework_home()
+    template = home / "templates" / "project"
+    if episode.exists() and any(episode.iterdir()):
+        if not args.force:
+            print(f"Refusing to overwrite non-empty {episode} (pass --force)", file=sys.stderr)
+            return 1
+    episode.mkdir(parents=True, exist_ok=True)
+    if template.is_dir():
+        for item in template.rglob("*"):
+            rel = item.relative_to(template)
+            dest = episode / rel
+            if item.is_dir():
+                dest.mkdir(parents=True, exist_ok=True)
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if dest.exists() and not args.force:
+                    continue
+                shutil.copy2(item, dest)
+    else:
+        (episode / "raw").mkdir(exist_ok=True)
+        (episode / "edit").mkdir(exist_ok=True)
+
+    yaml_path = episode / "project.yaml"
+    if not yaml_path.exists() or args.force:
+        yaml_path.write_text(
+            f"""id: {episode.name}
+sources:
+  cam: raw/cam.mp4
+  # screen: raw/screen.mp4
+style: tutorial
+asr:
+  backend: auto
+  model: small
+  language: id
+fps: 30
+aspect: "16:9"
+width: 1920
+height: 1080
+""",
+            encoding="utf-8",
+        )
+    print(f"Created episode at {episode}")
+    print("Drop footage into raw/, then: ae ingest .")
+    return 0
+
+
+def cmd_ingest(args: argparse.Namespace) -> int:
+    episode = resolve_episode(args.episode)
+    ingest_episode(episode, force=args.force, verbose=not args.quiet)
+    return 0
+
+
+def cmd_cut(args: argparse.Namespace) -> int:
+    episode = resolve_episode(args.episode)
+    cfg = load_project(episode)
+    edit = episode / "edit"
+    edl_path = Path(args.edl) if args.edl else edit / "edl.json"
+    if not edl_path.is_file():
+        # seed example if missing
+        print(f"No {edl_path}; writing example scaffold (edit before shipping)")
+        example = example_edl("../raw/cam.mp4")
+        edl_path.write_text(json.dumps(example, indent=2) + "\n", encoding="utf-8")
+        print("Update edit/edl.json with real keep ranges, then re-run ae cut")
+        return 1
+    out = render_edl(
+        edl_path,
+        edit,
+        preview=not args.final,
+        fps=int(cfg.get("fps", 30)),
+        verbose=not args.quiet,
+    )
+    print(f"Wrote {out}")
+    return 0
+
+
+def cmd_cover(args: argparse.Namespace) -> int:
+    episode = resolve_episode(args.episode)
+    cfg = load_project(episode)
+    edit = episode / "edit"
+    edl_path = edit / "edl.json"
+    if not edl_path.is_file():
+        print("Missing edit/edl.json — run radio-edit first", file=sys.stderr)
+        return 1
+    cover_path = edit / "cover.json"
+    if not cover_path.is_file():
+        cover_path.write_text(json.dumps(example_cover(), indent=2) + "\n", encoding="utf-8")
+        print(f"Seeded {cover_path.relative_to(episode)} — edit cover events, re-run ae cover")
+    edl = load_edl(edl_path)
+    # absolutize sources from project
+    sources = {}
+    for name, rel in (cfg.get("sources") or {}).items():
+        p = Path(rel)
+        sources[name] = str((episode / p).resolve() if not p.is_absolute() else p)
+    for name, rel in edl["sources"].items():
+        sources.setdefault(name, str((edit / rel).resolve() if not Path(rel).is_absolute() else rel))
+    edl["sources"] = sources
+    cover = json.loads(cover_path.read_text(encoding="utf-8"))
+    timeline = build_timeline_from_edl_and_cover(
+        edl,
+        cover,
+        fps=int(cfg.get("fps", 30)),
+        width=int(cfg.get("width", 1920)),
+        height=int(cfg.get("height", 1080)),
+    )
+    out = edit / "timeline.json"
+    write_timeline(out, timeline)
+    print(f"Wrote {out.relative_to(episode)} ({len(timeline['clips'])} clips, {timeline['durationSec']:.1f}s)")
+    return 0
+
+
+def cmd_compose(args: argparse.Namespace) -> int:
+    episode = resolve_episode(args.episode)
+    if args.studio:
+        run_studio(episode)
+        return 0
+    if args.prepare_only:
+        prepare_compose(episode)
+        return 0
+    out = render_compose(episode, output=Path(args.output) if args.output else None)
+    print(f"Wrote {out}")
+    return 0
+
+
+def cmd_qa(args: argparse.Namespace) -> int:
+    episode = resolve_episode(args.episode)
+    verify = qa_episode_preview(episode, verbose=not args.quiet)
+    print(f"QA frames in {verify}")
+    return 0
+
+
+def cmd_promote_check(args: argparse.Namespace) -> int:
+    episode = resolve_episode(args.episode)
+    path = episode / "edit" / "promotions.md"
+    if not path.is_file():
+        print("No edit/promotions.md — nothing pending")
+        return 0
+    print(path.read_text(encoding="utf-8"))
+    print(f"\nPromote into: {framework_home()}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="ae",
+        description="Agentic Editor — local ASR, radio-edit, Remotion compose",
+    )
+    p.add_argument("--version", action="version", version=f"ae {__version__}")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    d = sub.add_parser("doctor", help="Check ffmpeg, ASR backends, Remotion kit")
+    d.set_defaults(func=cmd_doctor)
+
+    n = sub.add_parser("new", help="Scaffold an episode folder")
+    n.add_argument("path", help="Episode directory to create")
+    n.add_argument("--force", action="store_true")
+    n.set_defaults(func=cmd_new)
+
+    ing = sub.add_parser("ingest", help="Probe + ASR + pack transcripts")
+    ing.add_argument("episode", nargs="?", default=".")
+    ing.add_argument("--force", action="store_true", help="Ignore ASR cache")
+    ing.add_argument("--quiet", action="store_true")
+    ing.set_defaults(func=cmd_ingest)
+
+    cut = sub.add_parser("cut", help="Render EDL → preview/a_roll via ffmpeg")
+    cut.add_argument("episode", nargs="?", default=".")
+    cut.add_argument("--edl", help="Path to edl.json (default edit/edl.json)")
+    cut.add_argument("--final", action="store_true", help="Higher quality a_roll.mp4")
+    cut.add_argument("--quiet", action="store_true")
+    cut.set_defaults(func=cmd_cut)
+
+    cov = sub.add_parser("cover", help="Merge EDL + cover.json → timeline.json")
+    cov.add_argument("episode", nargs="?", default=".")
+    cov.set_defaults(func=cmd_cover)
+
+    com = sub.add_parser("compose", help="Remotion studio / render from timeline")
+    com.add_argument("episode", nargs="?", default=".")
+    com.add_argument("--studio", action="store_true")
+    com.add_argument("--prepare-only", action="store_true")
+    com.add_argument("-o", "--output")
+    com.set_defaults(func=cmd_compose)
+
+    qa = sub.add_parser("qa", help="Extract cut-boundary frames from preview.mp4")
+    qa.add_argument("episode", nargs="?", default=".")
+    qa.add_argument("--quiet", action="store_true")
+    qa.set_defaults(func=cmd_qa)
+
+    pr = sub.add_parser("promote-check", help="Show edit/promotions.md")
+    pr.add_argument("episode", nargs="?", default=".")
+    pr.set_defaults(func=cmd_promote_check)
+
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return int(args.func(args))
+    except BrokenPipeError:
+        return 0
+    except Exception as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

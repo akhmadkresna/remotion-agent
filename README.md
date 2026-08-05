@@ -10,96 +10,38 @@ Repo: https://github.com/akhmadkresna/remotion-agent
 
 ---
 
-## Easy setup (one machine)
+## Easy setup (paste this prompt)
 
-### 1. Prerequisites
+Copy the block below into Cursor (or any coding agent) on a fresh machine:
 
-| Tool | Why | Install |
-|------|-----|---------|
-| **Git** | clone | already on most Macs |
-| **uv** | Python env + `ae` CLI | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| **Node ≥ 20** + **pnpm** | Remotion | `brew install node` then `npm i -g pnpm` (or `brew install pnpm`) |
-| **ffmpeg** | cut / QA | `brew install ffmpeg` |
-| **whisper-cpp** (macOS, recommended) | fast local ASR | `brew install whisper-cpp` |
+```
+Set up remotion-agent on this machine.
 
-Windows / Linux: skip whisper-cpp; `uv sync` installs **faster-whisper** and `ae` uses it automatically.
+Clone https://github.com/akhmadkresna/remotion-agent.git into a sensible
+dev folder (for example ~/dev/remotion-agent). That clone is the framework —
+set AGENTIC_EDITOR_HOME to its absolute path and persist it in my shell
+profile so new terminals keep it. Put the framework's .venv/bin on PATH
+(or wire an ae alias via uv run) so the ae CLI works.
 
-### 2. Clone and install
+Install whatever is missing: uv, Node 20+, pnpm, and ffmpeg. On macOS also
+install whisper-cpp (brew). Then from AGENTIC_EDITOR_HOME run uv sync and
+pnpm install.
 
-```bash
-git clone https://github.com/akhmadkresna/remotion-agent.git
-cd remotion-agent
+On macOS, download ggml-small.bin into $AGENTIC_EDITOR_HOME/models/ from
+https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+(about 466 MB; do not commit it). On Windows/Linux skip whisper-cpp —
+faster-whisper from uv sync is enough.
 
-# remember this path — every shell / Cursor session needs it
-export AGENTIC_EDITOR_HOME="$(pwd)"
+Symlink the Cursor skill once:
+~/.cursor/skills/agentic-editor → $AGENTIC_EDITOR_HOME/skills/agentic-editor
 
-uv sync
-pnpm install
+Finish by running ae doctor and fix anything it reports missing until
+ffmpeg, ffprobe, node, pnpm are OK, and either whisper.cpp + a ggml model
+or faster-whisper is OK. Then briefly tell me the AGENTIC_EDITOR_HOME path
+and how to create a first episode with ae new.
 ```
 
-Put `ae` on your PATH (pick one):
-
-```bash
-# option A — this shell only
-export PATH="$AGENTIC_EDITOR_HOME/.venv/bin:$PATH"
-
-# option B — always via uv
-alias ae='uv run --directory "$AGENTIC_EDITOR_HOME" ae'
-```
-
-Persist the env var (recommended):
-
-```bash
-# zsh
-echo 'export AGENTIC_EDITOR_HOME="$HOME/dev/remotion-agent"' >> ~/.zshrc
-echo 'export PATH="$AGENTIC_EDITOR_HOME/.venv/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-Adjust the path if you cloned somewhere else.
-
-### 3. ASR model (macOS / whisper.cpp)
-
-```bash
-mkdir -p "$AGENTIC_EDITOR_HOME/models"
-curl -L -o "$AGENTIC_EDITOR_HOME/models/ggml-small.bin" \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
-```
-
-(~466 MB; not committed to git.)
-
-### 4. Verify
-
-```bash
-ae doctor
-```
-
-You want `ffmpeg` / `ffprobe` / `node` / `pnpm` OK, plus either `whisper.cpp CLI: OK` + a ggml model, or `faster-whisper: OK`.
-
-### 5. Cursor skill (once)
-
-```bash
-mkdir -p ~/.cursor/skills
-ln -sfn "$AGENTIC_EDITOR_HOME/skills/agentic-editor" ~/.cursor/skills/agentic-editor
-```
-
-### 6. First episode
-
-```bash
-ae new ~/Videos/my-ep
-cd ~/Videos/my-ep
-# drop raw/cam.mp4 (and optional raw/screen.mp4)
-ae ingest .
-```
-
-Then edit with the Cursor agent (skill loaded). Confirm a radio-edit plan before writing `edit/edl.json`, then:
-
-```bash
-ae cut .
-ae cover .            # if you have edit/cover.json
-ae compose . --studio
-ae qa .
-```
+After setup, open an **episode** folder in Cursor (not only the framework), drop `raw/cam.mp4`, and ask the agent to ingest and edit. Confirm the radio-edit plan before it writes `edit/edl.json`.
 
 ---
 

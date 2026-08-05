@@ -1,3 +1,12 @@
+export type Framing = "wide" | "medium" | "close";
+export type FramingMotion =
+  | "hold"
+  | "snap"
+  | "ease"
+  | "ease_in"
+  | "ease_out"
+  | "drift";
+
 export type TimelineClip = {
   id: string;
   track: string;
@@ -7,10 +16,13 @@ export type TimelineClip = {
   fromSec: number;
   durationSec: number;
   layout: "full" | "pip_corner";
+  framing: Framing;
+  scale: number;
+  motion: FramingMotion;
 };
 
 export type PunchEffect = {
-  type: "punch_in";
+  type: "punch_in" | "punch_out";
   fromSec: number;
   durationSec: number;
   scale: number;

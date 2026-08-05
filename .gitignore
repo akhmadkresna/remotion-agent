@@ -28,3 +28,4 @@ models/*
 coverage/
 *.log
 .ae-cache/
+packages/remotion-kit/public/ae-media/

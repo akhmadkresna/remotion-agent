@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,9 +15,85 @@ from agentic_editor.editor.edl import load_edl
 from agentic_editor.paths import framework_home
 from agentic_editor.project import load_project, resolve_source
 
+# Absolute / drive-letter paths are not loadable in Remotion Studio (browser).
+_ABS_PATH = re.compile(r"^(?:/|[A-Za-z]:[\\/]|\\\\)")
+
 
 def remotion_kit_dir() -> Path:
     return framework_home() / "packages" / "remotion-kit"
+
+
+def stage_sources_for_remotion(
+    abs_sources: dict[str, str], *, verbose: bool = True
+) -> dict[str, str]:
+    """Hardlink/copy episode media into remotion-kit/public for Studio HTTP serve.
+
+    Remotion cannot load absolute filesystem paths in the browser — only ``public/``
+    via ``staticFile()``. Symlinks that escape ``public/`` are also rejected.
+    See https://www.remotion.dev/docs/miscellaneous/absolute-paths
+    """
+    public = remotion_kit_dir() / "public" / "ae-media"
+    if public.exists():
+        shutil.rmtree(public)
+    public.mkdir(parents=True, exist_ok=True)
+
+    staged: dict[str, str] = {}
+    for name, abs_path in abs_sources.items():
+        src = Path(abs_path)
+        if not src.is_file():
+            raise FileNotFoundError(f"Source {name!r} missing: {src}")
+        dest_name = f"{name}{src.suffix.lower()}"
+        dest = public / dest_name
+        if dest.exists() or dest.is_symlink():
+            dest.unlink()
+        try:
+            os.link(src.resolve(), dest)
+        except OSError:
+            shutil.copy2(src, dest)
+        if not dest.is_file():
+            raise RuntimeError(f"Failed to stage source {name!r} into {dest}")
+        # path relative to public/ — SourceClip wraps with staticFile()
+        staged[name] = f"ae-media/{dest_name}"
+        if verbose:
+            print(f"• staged {name} → public/{staged[name]} ({dest.stat().st_size} bytes)")
+    return staged
+
+
+def validate_timeline_for_studio(timeline: dict[str, Any], props_path: Path) -> list[str]:
+    """Return human-readable errors if Studio would show black/empty media."""
+    errors: list[str] = []
+    clips = timeline.get("clips") or []
+    sources = timeline.get("sources") or {}
+    frames = int(timeline.get("durationInFrames") or 0)
+    dur = float(timeline.get("durationSec") or 0)
+
+    if not clips:
+        errors.append("timeline has no clips (did you write edit/edl.json?)")
+    if frames < 30 or dur < 1.0:
+        errors.append(
+            f"timeline too short ({dur:.2f}s / {frames} frames) — looks like empty defaults"
+        )
+
+    public = remotion_kit_dir() / "public"
+    for name, rel in sources.items():
+        if not isinstance(rel, str) or not rel.strip():
+            errors.append(f"source {name!r} is empty")
+            continue
+        if _ABS_PATH.match(rel) or rel.startswith("file:"):
+            errors.append(
+                f"source {name!r} is an absolute path ({rel!r}) — "
+                "Studio cannot read disk paths; must be public-relative (ae-media/…)"
+            )
+            continue
+        if rel.startswith("http://") or rel.startswith("https://"):
+            continue
+        disk = public / rel
+        if not disk.is_file():
+            errors.append(f"staged file missing for {name!r}: expected {disk}")
+
+    if not props_path.is_file():
+        errors.append(f"missing props file {props_path}")
+    return errors
 
 
 def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
@@ -27,19 +104,19 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
         raise FileNotFoundError(f"Missing {edl_path}")
     edl = load_edl(edl_path)
 
-    # Resolve source paths to absolute for Remotion staticFile / absolute file protocol
     abs_sources: dict[str, str] = {}
     for name, rel in (cfg.get("sources") or {}).items():
         abs_sources[name] = str(resolve_source(episode, rel))
-    # Also merge EDL sources (may be relative to edit/)
     for name, rel in edl["sources"].items():
         p = Path(rel)
         if not p.is_absolute():
             p = (edit / p).resolve()
         abs_sources.setdefault(name, str(p))
 
+    staged_sources = stage_sources_for_remotion(abs_sources, verbose=verbose)
+
     edl_abs = dict(edl)
-    edl_abs["sources"] = abs_sources
+    edl_abs["sources"] = staged_sources
 
     cover_path = edit / "cover.json"
     cover = None
@@ -53,16 +130,24 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
         width=int(cfg.get("width", 1920)),
         height=int(cfg.get("height", 1080)),
     )
-    # Prefer project sources for cam/screen
-    timeline["sources"] = abs_sources
+    timeline["sources"] = staged_sources
+    timeline["sourcePaths"] = abs_sources  # absolute originals for tooling only
 
     out = edit / "timeline.json"
     write_timeline(out, timeline)
     props = edit / "remotion-props.json"
     props.write_text(json.dumps({"timeline": timeline}, indent=2) + "\n", encoding="utf-8")
+
+    errors = validate_timeline_for_studio(timeline, props)
+    if errors:
+        msg = "compose preflight failed:\n  - " + "\n  - ".join(errors)
+        raise RuntimeError(msg)
+
     if verbose:
         print(f"• timeline → {out.relative_to(episode)}")
         print(f"• props → {props.relative_to(episode)}")
+        print(f"• duration {timeline['durationSec']:.1f}s / {timeline['durationInFrames']} frames")
+        print("• preflight OK (staged public media + non-empty timeline)")
     return out
 
 
@@ -70,13 +155,28 @@ def run_studio(episode: Path) -> None:
     prepare_compose(episode)
     kit = remotion_kit_dir()
     props = episode / "edit" / "remotion-props.json"
+    # Re-check after write (belt + suspenders)
+    timeline = json.loads(props.read_text(encoding="utf-8")).get("timeline") or {}
+    errors = validate_timeline_for_studio(timeline, props)
+    if errors:
+        raise RuntimeError("refusing to start Studio:\n  - " + "\n  - ".join(errors))
+
     env = os.environ.copy()
     env["AE_TIMELINE_PROPS"] = str(props)
     env["AE_EPISODE"] = str(episode.resolve())
     if not (kit / "package.json").is_file():
         raise FileNotFoundError(f"Remotion kit missing at {kit}")
-    cmd = ["pnpm", "exec", "remotion", "studio", "src/index.ts"]
-    print(f"$ cd {kit} && AE_TIMELINE_PROPS={props} {' '.join(cmd)}")
+    cmd = [
+        "pnpm",
+        "exec",
+        "remotion",
+        "studio",
+        "src/index.ts",
+        "--props",
+        str(props),
+    ]
+    print(f"$ cd {kit} && {' '.join(cmd)}")
+    print("  (always pass --props — without it Studio shows a ~3s black empty timeline)")
     subprocess.run(cmd, cwd=str(kit), env=env, check=True)
 
 

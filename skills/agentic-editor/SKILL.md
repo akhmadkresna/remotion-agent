@@ -33,6 +33,9 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
 6. Local ASR only: `auto` → whisper.cpp (darwin) / faster-whisper (else).
    Default language is **Indonesian** (`asr.language: id`); override per episode for other languages.
 7. Promote reusable changes into `$AGENTIC_EDITOR_HOME`, not episode copies.
+8. Remotion Studio: **only** via `ae compose . --studio` (stages `public/ae-media` + `--props`).
+   Never start `remotion studio` bare — that shows a black empty timeline. Absolute `/Users/...`
+   media paths will not load in the browser.
 
 ## Process
 
@@ -63,13 +66,24 @@ Paths in EDL are relative to `edit/`.
 
 ```json
 {
+  "camera_play": {
+    "snap_on_cuts": true,
+    "home": "medium",
+    "alt": "close",
+    "wide_on_resets": true,
+    "max_hold_sec": 16,
+    "scales": { "wide": 1.0, "medium": 1.1, "close": 1.18 }
+  },
   "events": [
-    { "type": "punch_in", "start": 12.4, "end": 14.0, "scale": 1.15 },
+    { "type": "framing", "start": 10.0, "end": 18.0, "framing": "close", "motion": "ease" },
+    { "type": "punch_in", "start": 35.5, "end": 41.0, "scale": 1.12 },
     { "type": "screen", "source": "screen", "start": 14.0, "end": 20.0 }
   ],
   "captions": []
 }
 ```
+
+Framing presets simulate a 2–3 camera setup from one cam. Propose a camera-play plan from the transcript before writing `cover.json`.
 
 ## Promote
 

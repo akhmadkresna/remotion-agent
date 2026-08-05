@@ -4,11 +4,18 @@ import { AgenticTimeline } from "./Composition";
 import type { TimelineProps } from "./types";
 import { emptyTimeline } from "./types";
 
+/**
+ * Props come from Remotion CLI: `remotion studio … --props=…/remotion-props.json`
+ * (`ae compose --studio` passes this).
+ */
 const loadDefaultProps = (): TimelineProps => {
   const fromCli = getInputProps() as Partial<TimelineProps>;
   if (fromCli?.timeline) {
     return { timeline: fromCli.timeline };
   }
+  console.warn(
+    "No timeline props — use: ae compose <episode> --studio (passes --props). Using empty timeline.",
+  );
   return { timeline: emptyTimeline };
 };
 

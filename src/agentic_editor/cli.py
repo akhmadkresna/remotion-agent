@@ -58,6 +58,13 @@ def cmd_doctor(_: argparse.Namespace) -> int:
 
     kit = home / "packages" / "remotion-kit" / "package.json"
     print(f"remotion-kit: {'OK' if kit.is_file() else 'MISSING'}")
+    public = home / "packages" / "remotion-kit" / "public"
+    print(f"remotion public/: {'OK  ' + str(public) if public.is_dir() else 'will create on compose'}")
+
+    print("\nCompose rules (avoid black Studio):")
+    print("  Always:  ae compose <episode> --studio   # stages public/ae-media + passes --props")
+    print("  Never:   pnpm remotion studio   # alone → empty ~3s black timeline")
+    print("  Media must be public-relative (ae-media/cam.mov), never /Users/... absolute paths")
 
     print("\nInstall tips:")
     print("  Mac:     brew install whisper-cpp ffmpeg")

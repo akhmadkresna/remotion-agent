@@ -59,17 +59,56 @@ export const EdlSchema = z.object({
   grade: z.string().nullable().optional(),
 });
 
+/** Fake 2–3 cam framing presets (single source, digital crop). */
+export const FramingSchema = z.enum(["wide", "medium", "close"]);
+export const FramingMotionSchema = z.enum([
+  "hold",
+  "snap",
+  "ease",
+  "ease_in",
+  "ease_out",
+  "drift",
+]);
+
 export const CoverEventSchema = z.object({
-  type: z.enum(["screen", "screen_full", "pip", "screen_pip", "punch_in", "punch"]),
+  type: z.enum([
+    "screen",
+    "screen_full",
+    "pip",
+    "screen_pip",
+    "punch_in",
+    "punch",
+    "punch_out",
+    "framing",
+  ]),
   source: z.string().optional(),
   start: z.number(),
   end: z.number(),
   duration: z.number().optional(),
   scale: z.number().optional(),
+  framing: FramingSchema.optional(),
+  motion: FramingMotionSchema.optional(),
   note: z.string().optional(),
 });
 
+export const CameraPlaySchema = z.object({
+  /** Alternate home/alt framing at each EDL join when no framing event wins. */
+  snap_on_cuts: z.boolean().default(true),
+  home: FramingSchema.default("medium"),
+  alt: FramingSchema.default("close"),
+  /** Use wide on topic-reset beats (notes containing reset/lesson/howto/outro). */
+  wide_on_resets: z.boolean().default(true),
+  scales: z
+    .object({
+      wide: z.number().default(1.0),
+      medium: z.number().default(1.1),
+      close: z.number().default(1.18),
+    })
+    .default({}),
+});
+
 export const CoverSchema = z.object({
+  camera_play: CameraPlaySchema.default({}),
   events: z.array(CoverEventSchema).default([]),
   captions: z
     .array(
@@ -91,6 +130,9 @@ export const TimelineClipSchema = z.object({
   fromSec: z.number(),
   durationSec: z.number(),
   layout: z.enum(["full", "pip_corner"]).default("full"),
+  framing: FramingSchema.default("medium"),
+  scale: z.number().default(1),
+  motion: FramingMotionSchema.default("snap"),
 });
 
 export const TimelineSchema = z.object({
@@ -104,7 +146,7 @@ export const TimelineSchema = z.object({
   effects: z
     .array(
       z.object({
-        type: z.literal("punch_in"),
+        type: z.enum(["punch_in", "punch_out"]),
         fromSec: z.number(),
         durationSec: z.number(),
         scale: z.number().default(1.15),
@@ -127,3 +169,5 @@ export type Transcript = z.infer<typeof TranscriptSchema>;
 export type Edl = z.infer<typeof EdlSchema>;
 export type Cover = z.infer<typeof CoverSchema>;
 export type Timeline = z.infer<typeof TimelineSchema>;
+export type Framing = z.infer<typeof FramingSchema>;
+export type FramingMotion = z.infer<typeof FramingMotionSchema>;

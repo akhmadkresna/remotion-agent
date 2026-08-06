@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from agentic_editor.compose.mezzanine import resolve_compose_sources
 from agentic_editor.cover import build_timeline_from_edl_and_cover, write_timeline
 from agentic_editor.editor.edl import load_edl
 from agentic_editor.paths import framework_home
@@ -26,7 +27,11 @@ def remotion_kit_dir() -> Path:
 def stage_sources_for_remotion(
     abs_sources: dict[str, str], *, verbose: bool = True
 ) -> dict[str, str]:
-    """Hardlink/copy episode media into remotion-kit/public for Studio HTTP serve.
+    """Copy episode media into remotion-kit/public for Studio HTTP serve.
+
+    Always **copy** — never hardlink. On Windows, overwriting a hardlinked
+    ``public/ae-media/*.mp4`` rewrites the same inode as episode ``raw/``, which
+    can destroy masters when draft proxies are copied into public.
 
     Remotion cannot load absolute filesystem paths in the browser — only ``public/``
     via ``staticFile()``. Symlinks that escape ``public/`` are also rejected.
@@ -39,19 +44,29 @@ def stage_sources_for_remotion(
 
     staged: dict[str, str] = {}
     for name, abs_path in abs_sources.items():
-        src = Path(abs_path)
+        src = Path(abs_path).resolve()
         if not src.is_file():
             raise FileNotFoundError(f"Source {name!r} missing: {src}")
         dest_name = f"{name}{src.suffix.lower()}"
         dest = public / dest_name
         if dest.exists() or dest.is_symlink():
             dest.unlink()
-        try:
-            os.link(src.resolve(), dest)
-        except OSError:
-            shutil.copy2(src, dest)
+        shutil.copy2(src, dest)
         if not dest.is_file():
             raise RuntimeError(f"Failed to stage source {name!r} into {dest}")
+        # Guaranteed independent file — overwriting dest must not touch src.
+        if dest.resolve() == src:
+            raise RuntimeError(
+                f"staged path for {name!r} resolves to source {src} — refusing"
+            )
+        try:
+            if os.path.samefile(src, dest):
+                raise RuntimeError(
+                    f"staged {dest} is the same file as source {src} "
+                    "(hardlink/symlink) — refusing to protect raw masters"
+                )
+        except OSError:
+            pass
         # path relative to public/ — SourceClip wraps with staticFile()
         staged[name] = f"ae-media/{dest_name}"
         if verbose:
@@ -113,7 +128,11 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
             p = (edit / p).resolve()
         abs_sources.setdefault(name, str(p))
 
-    staged_sources = stage_sources_for_remotion(abs_sources, verbose=verbose)
+    # Prefer edit/mezzanine/* (deliverable size) over multi-GB raw masters.
+    compose_sources = resolve_compose_sources(
+        episode, abs_sources, cfg, verbose=verbose
+    )
+    staged_sources = stage_sources_for_remotion(compose_sources, verbose=verbose)
 
     edl_abs = dict(edl)
     edl_abs["sources"] = staged_sources
@@ -131,7 +150,9 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
         height=int(cfg.get("height", 1080)),
     )
     timeline["sources"] = staged_sources
-    timeline["sourcePaths"] = abs_sources  # absolute originals for tooling only
+    # absolute paths for tooling: compose media + raw masters
+    timeline["sourcePaths"] = compose_sources
+    timeline["rawSourcePaths"] = abs_sources
 
     out = edit / "timeline.json"
     write_timeline(out, timeline)

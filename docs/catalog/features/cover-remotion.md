@@ -20,17 +20,34 @@ Remotion runs in a **browser** — absolute disk paths and missing `--props` yie
 
 `ae compose` always:
 
-1. Hardlink/copy sources into `packages/remotion-kit/public/ae-media/`
-2. Write `edit/remotion-props.json` with **public-relative** sources (`ae-media/cam.mov`)
-3. Pass `--props` to `remotion studio` / `render`
-4. Fail loudly if timeline is empty or sources are still absolute
+1. Prefer `edit/mezzanine/<name>.mp4` when present (deliverable size), else raw
+2. **Copy** (never hardlink) into `packages/remotion-kit/public/ae-media/` — hardlinks
+   on Windows make overwriting Studio media destroy episode `raw/`
+3. Write `edit/remotion-props.json` with **public-relative** sources (`ae-media/cam.mov`)
+4. Pass `--props` to `remotion studio` / `render`
+5. Fail loudly if timeline is empty or sources are still absolute
+
+### Why multi‑GB raw ≠ deliverable quality loss
+
+Native cam is often 1440p60 at ~15–20 Mbps (~4 GB / 30 min). Episode `project.yaml`
+targets 1920×1080@30. Run:
+
+```bash
+ae mezzanine .                 # CRF 16 → edit/mezzanine/ (raw untouched)
+ae compose . --studio          # stages mezzanines
+```
+
+CRF 16 at deliverable size is near-transparent for YouTube (platform re-encodes).
+This shrinks Remotion I/O without lowering published quality.
 
 UI fallback: `MissingTimelineBanner` if Studio somehow loads empty props.
 
 ## Test
 
 ```bash
+uv run pytest tests/test_compose_staging.py
 uv run ae cover /path/to/episode
+uv run ae mezzanine /path/to/episode   # if raw ≫ deliverable
 uv run ae compose /path/to/episode --prepare-only
 # preflight must print "preflight OK"
 uv run ae compose /path/to/episode --studio

@@ -16,13 +16,14 @@ from agentic_editor.asr.backends import (
 )
 from agentic_editor.asr.ingest import ingest_episode
 from agentic_editor.compose import prepare_compose, render_compose, run_studio
+from agentic_editor.compose.mezzanine import build_mezzanines
 from agentic_editor.cover import example_cover, write_timeline
 from agentic_editor.cover import build_timeline_from_edl_and_cover
 from agentic_editor.editor.edl import example_edl, load_edl
 from agentic_editor.editor.qa import qa_episode_preview
 from agentic_editor.editor.render import render_edl
 from agentic_editor.paths import framework_home, resolve_episode
-from agentic_editor.project import load_project
+from agentic_editor.project import load_project, resolve_source
 
 
 def cmd_doctor(_: argparse.Namespace) -> int:
@@ -62,9 +63,11 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     print(f"remotion public/: {'OK  ' + str(public) if public.is_dir() else 'will create on compose'}")
 
     print("\nCompose rules (avoid black Studio):")
-    print("  Always:  ae compose <episode> --studio   # stages public/ae-media + passes --props")
+    print("  Always:  ae compose <episode> --studio   # copy→public/ae-media + passes --props")
+    print("  Heavy raw: ae mezzanine <episode>        # 1080p30 CRF16 → edit/mezzanine (raw safe)")
     print("  Never:   pnpm remotion studio   # alone → empty ~3s black timeline")
     print("  Media must be public-relative (ae-media/cam.mov), never /Users/... absolute paths")
+    print("  Staging always copies (never hardlinks) so draft proxies cannot clobber raw/")
 
     print("\nInstall tips:")
     print("  Mac:     brew install whisper-cpp ffmpeg")
@@ -187,6 +190,35 @@ def cmd_cover(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mezzanine(args: argparse.Namespace) -> int:
+    """Encode deliverable-sized proxies into edit/mezzanine/ (raw stays read-only)."""
+    episode = resolve_episode(args.episode)
+    cfg = load_project(episode)
+    sources: dict[str, Path] = {}
+    for name, rel in (cfg.get("sources") or {}).items():
+        sources[name] = resolve_source(episode, rel)
+    if not sources:
+        print("No sources in project.yaml", file=sys.stderr)
+        return 1
+    missing = [n for n, p in sources.items() if not p.is_file()]
+    if missing:
+        print(f"Missing source file(s): {', '.join(missing)}", file=sys.stderr)
+        return 1
+    built = build_mezzanines(
+        episode,
+        sources,
+        width=int(cfg.get("width", 1920)),
+        height=int(cfg.get("height", 1080)),
+        fps=int(cfg.get("fps", 30)),
+        crf=int(args.crf),
+        force=bool(args.force),
+        verbose=not args.quiet,
+    )
+    print(f"Mezzanines ready: {', '.join(f'{n}→{p}' for n, p in built.items())}")
+    print("Next: ae compose . --studio   # stages mezzanines, not multi-GB raw")
+    return 0
+
+
 def cmd_compose(args: argparse.Namespace) -> int:
     episode = resolve_episode(args.episode)
     if args.studio:
@@ -250,6 +282,21 @@ def build_parser() -> argparse.ArgumentParser:
     cov = sub.add_parser("cover", help="Merge EDL + cover.json → timeline.json")
     cov.add_argument("episode", nargs="?", default=".")
     cov.set_defaults(func=cmd_cover)
+
+    mez = sub.add_parser(
+        "mezzanine",
+        help="Encode deliverable-size proxies → edit/mezzanine (raw untouched)",
+    )
+    mez.add_argument("episode", nargs="?", default=".")
+    mez.add_argument(
+        "--crf",
+        type=int,
+        default=16,
+        help="libx264 CRF (default 16 = near-transparent for 1080p YouTube)",
+    )
+    mez.add_argument("--force", action="store_true", help="Rebuild even if up-to-date")
+    mez.add_argument("--quiet", action="store_true")
+    mez.set_defaults(func=cmd_mezzanine)
 
     com = sub.add_parser("compose", help="Remotion studio / render from timeline")
     com.add_argument("episode", nargs="?", default=".")

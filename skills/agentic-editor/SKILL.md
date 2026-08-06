@@ -29,13 +29,16 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
 2. Never cut mid-word; snap to transcript word boundaries; pad 30–200ms.
 3. `ae cut` applies 30ms audio fades per segment — do not skip.
 4. Cache transcripts — never re-ASR unless source changed (`ae ingest --force`).
-5. All outputs in `edit/`. Raw footage is read-only.
+5. All outputs in `edit/`. Raw footage is read-only — never hardlink `raw/` into
+   Remotion `public/` (overwrite would clobber masters). Staging always **copies**.
 6. Local ASR only: `auto` → whisper.cpp (darwin) / faster-whisper (else).
    Default language is **Indonesian** (`asr.language: id`); override per episode for other languages.
 7. Promote reusable changes into `$AGENTIC_EDITOR_HOME`, not episode copies.
 8. Remotion Studio: **only** via `ae compose . --studio` (stages `public/ae-media` + `--props`).
    Never start `remotion studio` bare — that shows a black empty timeline. Absolute `/Users/...`
    media paths will not load in the browser.
+9. If raw ≫ deliverable (e.g. 1440p60 multi‑GB vs project 1080p30): `ae mezzanine .`
+   then compose — CRF16 mezzanines in `edit/mezzanine/`; does not reduce YouTube quality.
 
 ## Process
 
@@ -45,6 +48,7 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
 4. **Write** `edit/edl.json` (`sources` + `ranges[]` with `source`/`start`/`end`)
 5. **Cut** — `ae cut .` → `edit/preview.mp4`
 6. **Cover** (if screen) — write `edit/cover.json` → `ae cover .`
+6b. **Mezzanine** (if raw is multi‑GB / higher than project res/fps) — `ae mezzanine .`
 7. **Compose** — `ae compose . --studio` or render
 8. **QA** — `ae qa .` inspect `edit/verify/` cut frames
 9. **Iterate** — natural language; never re-transcribe casually

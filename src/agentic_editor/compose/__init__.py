@@ -209,11 +209,71 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
         msg = "compose preflight failed:\n  - " + "\n  - ".join(errors)
         raise RuntimeError(msg)
 
+    from agentic_editor.compose.quality import audit_timeline_quality, format_audit
+
+    q_err, q_warn = audit_timeline_quality(timeline, cover=cover)
+    if verbose and (q_err or q_warn):
+        print("• quality audit:")
+        for line in format_audit(q_err, q_warn).splitlines():
+            print(f"  {line}")
+    if q_err:
+        raise RuntimeError(
+            "compose quality gate failed:\n  - " + "\n  - ".join(q_err)
+        )
+
     if verbose:
         print(f"• timeline → {out.relative_to(episode)}")
         print(f"• props → {props.relative_to(episode)}")
         print(f"• duration {timeline['durationSec']:.1f}s / {timeline['durationInFrames']} frames")
         print("• preflight OK (staged public media + non-empty timeline)")
+    return out
+
+
+def prepare_draft(
+    episode: Path,
+    *,
+    limit_sec: float = 120.0,
+    verbose: bool = True,
+) -> Path:
+    """Prepare compose, then write a correctly sliced draft props file.
+
+    Always slices via ``draft_slice.slice_timeline`` (fromSec-aware) so overlays
+    are not silently dropped.
+    """
+    from agentic_editor.compose.draft_slice import slice_timeline
+    from agentic_editor.compose.quality import audit_timeline_quality, format_audit
+
+    prepare_compose(episode, verbose=verbose)
+    props_path = episode / "edit" / "remotion-props.json"
+    full = json.loads(props_path.read_text(encoding="utf-8"))
+    timeline = full.get("timeline") or full
+    sliced = slice_timeline(timeline, limit_sec)
+
+    cover = None
+    cover_path = episode / "edit" / "cover.json"
+    if cover_path.is_file():
+        cover = json.loads(cover_path.read_text(encoding="utf-8"))
+    q_err, q_warn = audit_timeline_quality(sliced, cover=cover)
+    if verbose and (q_err or q_warn):
+        print("• draft quality audit:")
+        for line in format_audit(q_err, q_warn).splitlines():
+            print(f"  {line}")
+    if q_err:
+        raise RuntimeError("draft quality gate failed:\n  - " + "\n  - ".join(q_err))
+
+    drafts = episode / "edit" / "drafts"
+    drafts.mkdir(parents=True, exist_ok=True)
+    tag = int(limit_sec) if float(limit_sec).is_integer() else limit_sec
+    out = drafts / f"remotion-props-{tag}s.json"
+    out.write_text(json.dumps({"timeline": sliced}, indent=2) + "\n", encoding="utf-8")
+    if verbose:
+        n_ov = len(sliced.get("overlays") or [])
+        n_fx = len(sliced.get("effects") or [])
+        print(
+            f"• draft props → {out.relative_to(episode)} "
+            f"({limit_sec:.0f}s, {len(sliced.get('clips') or [])} clips, "
+            f"{n_ov} overlays, {n_fx} effects)"
+        )
     return out
 
 
@@ -362,6 +422,45 @@ def render_compose(episode: Path, *, output: Path | None = None) -> Path:
         str(out),
         "--props",
         str(props),
+    ]
+    print(f"$ cd {kit} && {' '.join(cmd)}")
+    subprocess.run(cmd, cwd=str(kit), env=env, check=True)
+    return out
+
+
+def render_draft(
+    episode: Path,
+    *,
+    limit_sec: float = 120.0,
+    output: Path | None = None,
+    jpeg_quality: int = 70,
+    verbose: bool = True,
+) -> Path:
+    """Render the first ``limit_sec`` seconds using a fromSec-safe draft slice."""
+    props = prepare_draft(episode, limit_sec=limit_sec, verbose=verbose)
+    kit = remotion_kit_dir()
+    tag = int(limit_sec) if float(limit_sec).is_integer() else limit_sec
+    out = output or (episode / "edit" / "drafts" / f"draft-open-{tag}s.mp4")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fps = int(
+        json.loads(props.read_text(encoding="utf-8"))
+        .get("timeline", {})
+        .get("fps", 30)
+    )
+    last_frame = max(0, int(round(limit_sec * fps)) - 1)
+    env = os.environ.copy()
+    env["AE_TIMELINE_PROPS"] = str(props)
+    env["AE_EPISODE"] = str(episode.resolve())
+    cmd = [
+        *_remotion_cli(kit),
+        "render",
+        "src/index.ts",
+        "AgenticTimeline",
+        str(out),
+        "--props",
+        str(props),
+        f"--frames=0-{last_frame}",
+        f"--jpeg-quality={int(jpeg_quality)}",
     ]
     print(f"$ cd {kit} && {' '.join(cmd)}")
     subprocess.run(cmd, cwd=str(kit), env=env, check=True)

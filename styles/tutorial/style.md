@@ -48,8 +48,19 @@ overlays:
   # - structure reserved first; section quota on long screen windows
   # - gaps: ~90s chapters, ~25s emphasis; densify ~1 sting / 70s keep
 punch_in:
-  scale: 1.15
-  defaultDurationSec: 1.2
+  scale: 1.28
+  defaultDurationSec: 1.35
+# Fake multicam defaults (ae cover / example_cover). Close must read as cam B.
+camera_play:
+  snap_on_cuts: true
+  home: medium
+  alt: close
+  wide_on_resets: true
+  max_hold_sec: 7
+  scales:
+    wide: 1.0
+    medium: 1.22
+    close: 1.42
 cover:
   prefer_screen_when:
     - look at
@@ -128,4 +139,10 @@ Agents must load these defaults when `project.yaml` has `style: tutorial` (frame
 
 Run `ae cover-suggest .` after the EDL is confirmed when a `screen` source exists.
 Screen crop is **dynamic** (`smart_window_detect`) — never hardcode left/right % for one episode.
+When a verified crop exists, compose **prefers** `edit/window_crop.json` `stable` over per-clip
+detect (per-clip often leaks desktop chrome and looks “not smart”).
 Do not fork overlay colors/fonts per episode — promote changes into this style pack.
+
+**Draft review:** use `ae draft . --seconds 120 --render` (fromSec-safe slice + quality gates).
+Do **not** hand-trim `remotion-props.json` by `start`/`end` — overlays use `fromSec`/`durationSec`
+and will silently disappear (no opening chip).

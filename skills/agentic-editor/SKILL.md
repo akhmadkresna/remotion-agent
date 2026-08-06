@@ -70,9 +70,18 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
    - Write `cover.json` `overlays[]` + merge companion `framing` into `events[]`
      (source-time, word-snapped) → `ae cover .` / `ae compose .`
 6c. **Mezzanine** (if raw is multi‑GB / higher than project res/fps) — `ae mezzanine .`
+6d. **Draft review** — `ae draft . --seconds 120 --render` (quality gates; never hand-slice props)
 7. **Compose** — `ae compose . --studio` or render
 8. **QA** — `ae qa .` inspect `edit/verify/` cut frames
 9. **Iterate** — natural language; never re-transcribe casually
+
+### Why drafts used to look broken (framework gates)
+
+| Miss | Cause | Gate now |
+|------|-------|----------|
+| No opening chip / OverlayLayer | Draft trim used `start`/`end`; overlays are `fromSec`/`durationSec` | `ae draft` + `slice_timeline` |
+| Soft / boring zoom | Default scales 1.1/1.18; punches disabled for whole ep if any float existed | Punchier defaults; frame-aware punchScale; quality WARN |
+| “Dumb” screen crop | Per-clip detect wider than verified window | Prefer `edit/window_crop.json` stable; ERROR if float lacks crop |
 
 ## EDL shape
 
@@ -96,18 +105,20 @@ Paths in EDL are relative to `edit/`.
     "home": "medium",
     "alt": "close",
     "wide_on_resets": true,
-    "max_hold_sec": 16,
-    "scales": { "wide": 1.0, "medium": 1.1, "close": 1.18 }
+    "max_hold_sec": 7,
+    "scales": { "wide": 1.0, "medium": 1.22, "close": 1.42 }
   },
   "events": [
     { "type": "framing", "start": 10.0, "end": 18.0, "framing": "close", "motion": "ease" },
-    { "type": "punch_in", "start": 35.5, "end": 41.0, "scale": 1.12 },
+    { "type": "punch_in", "start": 35.5, "end": 41.0, "scale": 1.28 },
     { "type": "screen_with_cam", "start": 14.0, "end": 42.0, "note": "demo UI" }
   ],
   "captions": []
 }
 ```
 
+Default scales are punchy on purpose (`close` ≥ 1.32). Soft scales (1.1 / 1.18) fail the
+compose quality **warning** gate — multicam will look like no cut at all.
 ### Overlay shape (`cover.json` → remapped in `timeline.overlays`)
 
 ```json

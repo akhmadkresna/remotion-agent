@@ -19,8 +19,12 @@
 - A-roll MG (`overlays`): **Bold** type + accent **cool mist sky** `#7dd3fc` — no glass cards, no full/karaoke captions
 - Screen stage (`screen_explainer`): preset **cozy** (screen width 78%), canvas **cool mist** `#d9e2ec`
 - PIP: no border, stage lower-right (not nested in the screen window)
-- Crop: `smart_window_detect` (`cover/window_crop.py`) — dynamic window bbox + optional browser-chrome trim; annotated on clips as `windowCrop` at compose time
+- Crop: `smart_window_detect` (`cover/window_crop.py`) — dynamic window bbox; compose prefers
+  verified `edit/window_crop.json` `stable` when present (avoids over-wide desktop chrome)
 - Tokens load via `style_load.load_overlays` / `load_screen_explainer` → `timeline.presentation`
+- **Quality gates** on `ae compose` / `ae draft`: missing remapped overlays, float without
+  `windowCrop`, timid camera scales, soft punches, over-wide crops
+- **Draft:** `ae draft . --seconds 120 [--render]` — fromSec-safe slice (do not hand-trim props)
 
 ## A-roll MG overlays
 
@@ -114,12 +118,13 @@ UI fallback: `MissingTimelineBanner` if Studio somehow loads empty props.
 ## Test
 
 ```bash
-uv run pytest tests/test_compose_staging.py tests/test_cover.py tests/test_overlay_suggest.py -q
+uv run pytest tests/test_compose_staging.py tests/test_cover.py tests/test_overlay_suggest.py tests/test_draft_quality.py -q
 uv run ae cover /path/to/episode
 uv run ae cover-suggest /path/to/episode
 uv run ae overlay-suggest /path/to/episode
 uv run ae mezzanine /path/to/episode   # if raw ≫ deliverable
 uv run ae compose /path/to/episode --prepare-only
-# preflight must print "preflight OK"
+# preflight must print "preflight OK"; quality WARN/ERROR if soft cam or missing overlays
+uv run ae draft /path/to/episode --seconds 120 --render
 uv run ae compose /path/to/episode --studio
 ```

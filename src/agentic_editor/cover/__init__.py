@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-DEFAULT_SCALES = {"wide": 1.0, "medium": 1.1, "close": 1.18}
+DEFAULT_SCALES = {"wide": 1.0, "medium": 1.22, "close": 1.42}
 
 RESET_NOTE_RE = re.compile(
     r"\b(reset|lesson|howto|how-to|outro|thanks)\b",
@@ -312,7 +312,8 @@ def example_cover() -> dict[str, Any]:
             "home": "medium",
             "alt": "close",
             "wide_on_resets": True,
-            "scales": {"wide": 1.0, "medium": 1.1, "close": 1.18},
+            "max_hold_sec": 7,
+            "scales": {"wide": 1.0, "medium": 1.22, "close": 1.42},
         },
         "events": [
             {
@@ -327,8 +328,8 @@ def example_cover() -> dict[str, Any]:
                 "type": "punch_in",
                 "start": 12.0,
                 "end": 15.0,
-                "duration": 3.0,
-                "scale": 1.12,
+                "duration": 1.35,
+                "scale": 1.28,
                 "note": "emphasize key line",
             },
             {

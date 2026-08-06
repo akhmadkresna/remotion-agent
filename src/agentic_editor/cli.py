@@ -1,4 +1,4 @@
-"""ae CLI — doctor, new, ingest, cut, cover, cover-suggest, overlay-suggest, compose, qa, promote-check."""
+"""ae CLI — doctor, new, ingest, cut, cover, cover-suggest, overlay-suggest, mezzanine, draft, compose, qa, promote-check."""
 
 from __future__ import annotations
 
@@ -15,7 +15,13 @@ from agentic_editor.asr.backends import (
     whisper_cpp_binary,
 )
 from agentic_editor.asr.ingest import ingest_episode
-from agentic_editor.compose import prepare_compose, render_compose, run_studio
+from agentic_editor.compose import (
+    prepare_compose,
+    prepare_draft,
+    render_compose,
+    render_draft,
+    run_studio,
+)
 from agentic_editor.compose.mezzanine import build_mezzanines
 from agentic_editor.cover import example_cover, write_timeline
 from agentic_editor.cover import build_timeline_from_edl_and_cover
@@ -65,10 +71,12 @@ def cmd_doctor(_: argparse.Namespace) -> int:
     public = home / "packages" / "remotion-kit" / "public"
     print(f"remotion public/: {'OK  ' + str(public) if public.is_dir() else 'will create on compose'}")
 
-    print("\nCompose rules (avoid black Studio):")
+    print("\nCompose rules (avoid black Studio / silent bad drafts):")
     print("  Always:  ae compose <episode> --studio   # copy→public/ae-media + passes --props")
+    print("  Draft:   ae draft <episode> --seconds 120 --render  # fromSec-safe + quality gates")
     print("  Heavy raw: ae mezzanine <episode>        # 1080p30 CRF16 → edit/mezzanine (raw safe)")
     print("  Never:   pnpm remotion studio   # alone → empty ~3s black timeline")
+    print("  Never:   hand-trim remotion-props by start/end  # drops overlays (use ae draft)")
     print("  Media must be public-relative (ae-media/cam.mov), never /Users/... absolute paths")
     print("  Staging always copies (never hardlinks) so draft proxies cannot clobber raw/")
 
@@ -327,6 +335,25 @@ def cmd_compose(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_draft(args: argparse.Namespace) -> int:
+    """Prepare a first-N-seconds draft with quality gates; optionally render."""
+    episode = resolve_episode(args.episode)
+    limit = float(args.seconds)
+    if args.render:
+        out = render_draft(
+            episode,
+            limit_sec=limit,
+            output=Path(args.output) if args.output else None,
+            jpeg_quality=int(args.jpeg_quality),
+        )
+        print(f"Wrote {out}")
+        return 0
+    props = prepare_draft(episode, limit_sec=limit)
+    print(f"Draft props ready: {props}")
+    print(f"Render with: ae draft . --seconds {limit:g} --render")
+    return 0
+
+
 def cmd_qa(args: argparse.Namespace) -> int:
     episode = resolve_episode(args.episode)
     verify = qa_episode_preview(episode, verbose=not args.quiet)
@@ -434,6 +461,31 @@ def build_parser() -> argparse.ArgumentParser:
     com.add_argument("--prepare-only", action="store_true")
     com.add_argument("-o", "--output")
     com.set_defaults(func=cmd_compose)
+
+    dr = sub.add_parser(
+        "draft",
+        help="First-N-seconds review props (fromSec-safe slice + quality gates)",
+    )
+    dr.add_argument("episode", nargs="?", default=".")
+    dr.add_argument(
+        "--seconds",
+        type=float,
+        default=120.0,
+        help="Draft length in seconds (default 120)",
+    )
+    dr.add_argument(
+        "--render",
+        action="store_true",
+        help="Also Remotion-render edit/drafts/draft-open-<N>s.mp4",
+    )
+    dr.add_argument(
+        "--jpeg-quality",
+        type=int,
+        default=70,
+        help="Draft render JPEG quality (default 70)",
+    )
+    dr.add_argument("-o", "--output", help="Draft mp4 path (with --render)")
+    dr.set_defaults(func=cmd_draft)
 
     qa = sub.add_parser("qa", help="Extract cut-boundary frames from preview.mp4")
     qa.add_argument("episode", nargs="?", default=".")

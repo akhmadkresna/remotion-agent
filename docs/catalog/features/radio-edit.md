@@ -18,24 +18,23 @@
 
 ### Silence / wait / repeat (tutorial defaults)
 
-Aggressive tutorial defaults — do **not** leave full AI wait / spinner time on screen.
+Goal: **clean sentences**, short AI waits — not shredded speech.
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `gap_cut_sec` | 0.35 | Cut silences ≥ this |
-| `hold_if_gap_sec` | 3.5 | Longer gaps (AI/screen waits) → short beat only |
-| `hold_sec` | 0.7 | Beat kept when collapsing long gaps (not full wait UI) |
-| `min_keep_sec` | 0.35 | Drop tiny ranges |
-| `cut_repeats` | true | Drop near-duplicate phrases (Jaccard) |
-| `repeat_similarity` | 0.82 | Similarity threshold |
-| `repeat_window_sec` | 45 | Look-back for repeats |
-| `cut_wait_speech` | true | Clamp "tunggu/sebentar/loading/…" |
-| `wait_speech_max_sec` | 0.7 | Max keep for wait-filler speech |
-| pads | 0.04 / 0.06 | Word-boundary snap pads |
+| `silence_gap_sec` | 0.55 | Pack words into sentence-ish phrases |
+| `gap_cut_sec` | 0.70 | Cut silences ≥ this (keep mid-sentence breaths) |
+| `hold_if_gap_sec` | 5.0 | Longer gaps (AI/screen waits) → short beat only |
+| `hold_sec` | 1.0 | Beat kept when collapsing long gaps |
+| `min_keep_sec` | 0.90 | Drop tiny fragments |
+| `cut_repeats` | true | Drop near-duplicate phrases (Jaccard + containment) |
+| `bridge_gap_sec` | 2.5 | Merge ASR-overlap / same-thought neighbors |
+| `cut_wait_speech` | true | Clamp short wait prompts only |
+| `wait_speech_max_sec` | 0.9 | Max keep for wait-filler speech |
+| pads | 0.08 / 0.12 | Word-boundary snap pads |
 
 ```bash
 ae edl-suggest .                          # style radio_edit.* defaults
-ae edl-suggest . --gap-cut 0.35 --hold-if-gap 3.5 --hold 0.7
 ae edl-suggest . --source-end 1887        # CapCut-style source window
 # after confirm:
 ae edl-suggest . --apply

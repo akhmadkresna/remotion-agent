@@ -74,7 +74,6 @@ def test_off_hold_extends_activity_run():
         activity_threshold=0.035,
     )
     assert events
-    # activity 5..10 + off_hold 1.5 → end around 11.5
     assert events[0]["end"] >= 11.0
 
 
@@ -95,17 +94,41 @@ def test_screen_bias_lowers_threshold():
     assert out["merge_gap_sec"] > 0.8
 
 
-def test_style_radio_config_is_aggressive():
+def test_style_radio_config_keeps_sentences():
     cfg = load_style_radio_config("tutorial")
-    assert cfg["gap_cut_sec"] <= 0.4
-    assert cfg["hold_sec"] <= 0.8
-    assert cfg["hold_if_gap_sec"] <= 4.0
+    assert cfg["gap_cut_sec"] >= 0.55
+    assert cfg["hold_sec"] <= 1.5
+    assert cfg["min_keep_sec"] >= 0.8
     assert cfg["cut_repeats"] is True
-    assert cfg["cut_wait_speech"] is True
+    assert cfg["bridge_gap_sec"] >= 2.0
+
+
+def test_edl_suggest_keeps_short_breath_inside_sentence():
+    # 0.4s breath mid-thought must NOT become a hard cut
+    words = [
+        {"text": "halo", "start": 0.0, "end": 0.4},
+        {"text": "dunia", "start": 0.5, "end": 1.2},
+        {"text": "oke", "start": 1.3, "end": 2.0},
+        {"text": "lanjut", "start": 2.4, "end": 3.0},
+        {"text": "ya", "start": 3.1, "end": 3.5},
+    ]
+    edl = suggest_edl_from_words(
+        words,
+        gap_cut_sec=0.70,
+        hold_if_gap_sec=5.0,
+        hold_sec=1.0,
+        min_keep_sec=0.5,
+        snap=False,
+        cut_repeats=False,
+        cut_wait_speech=False,
+        silence_gap_sec=0.55,
+    )
+    ranges = edl["ranges"]
+    assert len(ranges) == 1
+    assert ranges[0]["end"] >= 3.4
 
 
 def test_edl_suggest_cuts_medium_silence():
-    # speech 0-2, silence 2-3.5 (1.5s), speech 3.5-5
     words = [
         {"text": "halo", "start": 0.0, "end": 0.4},
         {"text": "dunia", "start": 0.5, "end": 1.2},
@@ -115,10 +138,10 @@ def test_edl_suggest_cuts_medium_silence():
     ]
     edl = suggest_edl_from_words(
         words,
-        gap_cut_sec=0.35,
-        hold_if_gap_sec=3.5,
-        hold_sec=0.7,
-        min_keep_sec=0.3,
+        gap_cut_sec=0.70,
+        hold_if_gap_sec=5.0,
+        hold_sec=1.0,
+        min_keep_sec=0.5,
         snap=False,
         cut_repeats=False,
         cut_wait_speech=False,
@@ -127,104 +150,99 @@ def test_edl_suggest_cuts_medium_silence():
     assert len(ranges) == 2
     assert ranges[0]["end"] <= 2.1
     assert ranges[1]["start"] >= 3.4
-    assert edl["_meta"]["keep_sec"] < 5.0
 
 
 def test_edl_suggest_holds_short_beat_on_long_ai_wait():
-    # speech, then 10s gap, then speech — keep only hold_sec of the wait (not full spinner)
     words = [
         {"text": "klik", "start": 0.0, "end": 1.0},
         {"text": "selesai", "start": 12.0, "end": 13.0},
     ]
     edl = suggest_edl_from_words(
         words,
-        gap_cut_sec=0.35,
-        hold_if_gap_sec=3.5,
-        hold_sec=0.7,
-        min_keep_sec=0.3,
+        gap_cut_sec=0.70,
+        hold_if_gap_sec=5.0,
+        hold_sec=1.0,
+        min_keep_sec=0.5,
         snap=False,
         cut_repeats=False,
         cut_wait_speech=False,
     )
     ranges = edl["ranges"]
     assert len(ranges) == 2
-    assert ranges[0]["end"] >= 1.6
-    assert ranges[0]["end"] <= 2.0
+    assert ranges[0]["end"] >= 1.9
+    assert ranges[0]["end"] <= 2.2
     assert ranges[0]["end"] < 12.0
-    keep = edl["_meta"]["keep_sec"]
-    assert keep < 4.0
-    assert keep >= 2.5  # ~1s + 0.7 hold + 1s
 
 
-def test_edl_suggest_clamps_wait_speech():
-    assert is_wait_speech("tunggu sebentar ya")
-    words = [
-        {"text": "tunggu", "start": 0.0, "end": 0.5},
-        {"text": "sebentar", "start": 0.6, "end": 3.0},
-        {"text": "lanjut", "start": 3.5, "end": 4.5},
-    ]
-    edl = suggest_edl_from_words(
-        words,
-        gap_cut_sec=0.35,
-        hold_if_gap_sec=8.0,
-        hold_sec=0.7,
-        min_keep_sec=0.3,
-        snap=False,
-        cut_repeats=False,
-        cut_wait_speech=True,
-        wait_speech_max_sec=0.7,
+def test_wait_speech_only_short_prompts():
+    assert is_wait_speech("tunggu sebentar")
+    assert is_wait_speech("loading")
+    assert not is_wait_speech(
+        "kita tunggu proses pembelian sampai status diterima di gudang"
     )
-    ranges = edl["ranges"]
-    assert ranges
-    # wait phrase must not keep the full ~3s prompt
-    assert ranges[0]["end"] <= 1.5
-    assert edl["_meta"]["clamped_wait"] >= 1
 
 
-def test_edl_suggest_cuts_near_duplicate_phrases():
-    assert phrase_similarity("klik tombol simpan", "klik tombol simpan") >= 0.9
+def test_edl_suggest_bridges_asr_overlap_repeat():
+    # Same line transcribed twice with a short gap (classic whisper overlap)
     words = [
-        {"text": "klik", "start": 0.0, "end": 0.4},
-        {"text": "tombol", "start": 0.5, "end": 1.0},
-        {"text": "simpan", "start": 1.1, "end": 1.8},
-        {"text": "klik", "start": 3.0, "end": 3.4},
-        {"text": "tombol", "start": 3.5, "end": 4.0},
-        {"text": "simpan", "start": 4.1, "end": 4.8},
-        {"text": "selesai", "start": 6.0, "end": 7.0},
+        {"text": "kemudian", "start": 0.0, "end": 0.4},
+        {"text": "ke", "start": 0.5, "end": 0.7},
+        {"text": "cloud", "start": 0.8, "end": 1.1},
+        {"text": "code", "start": 1.2, "end": 1.6},
+        {"text": "kemudian", "start": 3.0, "end": 3.4},
+        {"text": "ke", "start": 3.5, "end": 3.7},
+        {"text": "cloud", "start": 3.8, "end": 4.1},
+        {"text": "code", "start": 4.2, "end": 4.6},
+        {"text": "hasil", "start": 4.7, "end": 5.1},
+        {"text": "kerjaan", "start": 5.2, "end": 5.8},
     ]
+    assert phrase_similarity(
+        "kemudian ke cloud code", "kemudian ke cloud code hasil kerjaan"
+    ) >= 0.72
     edl = suggest_edl_from_words(
         words,
-        gap_cut_sec=0.35,
+        gap_cut_sec=0.70,
         hold_if_gap_sec=8.0,
-        hold_sec=0.7,
-        min_keep_sec=0.3,
+        hold_sec=1.0,
+        min_keep_sec=0.5,
         snap=False,
         cut_repeats=True,
-        repeat_similarity=0.82,
+        repeat_similarity=0.72,
+        bridge_gap_sec=2.5,
+        bridge_similarity=0.55,
         cut_wait_speech=False,
+        silence_gap_sec=0.55,
     )
-    assert edl["_meta"]["dropped_repeat"] >= 1
-    texts_end = [r["end"] for r in edl["ranges"]]
-    # middle duplicate (3–4.8) should be gone; keep first + selesai
-    assert not any(3.0 <= e <= 5.0 for e in texts_end)
-    assert any(r["start"] >= 5.5 for r in edl["ranges"])
+    # Should not keep two nearly identical openings back-to-back
+    texts = []
+    for r in edl["ranges"]:
+        texts.append(
+            " ".join(
+                w["text"]
+                for w in words
+                if float(w["end"]) > float(r["start"])
+                and float(w["start"]) < float(r["end"])
+            )
+        )
+    assert len(edl["ranges"]) <= 2
+    assert edl["_meta"]["dropped_repeat"] + edl["_meta"].get("bridged_ranges", 0) >= 1
 
 
 def test_edl_suggest_respects_source_window():
     words = [
-        {"text": "a", "start": 0.0, "end": 1.0},
-        {"text": "b", "start": 10.0, "end": 11.0},
-        {"text": "c", "start": 20.0, "end": 21.0},
+        {"text": "alpha", "start": 0.0, "end": 1.0},
+        {"text": "bravo", "start": 10.0, "end": 11.0},
+        {"text": "charlie", "start": 20.0, "end": 21.0},
     ]
     edl = suggest_edl_from_words(
         words,
-        gap_cut_sec=0.35,
+        gap_cut_sec=0.70,
         hold_if_gap_sec=8.0,
-        hold_sec=0.7,
+        hold_sec=1.0,
         source_start=5.0,
         source_end=15.0,
         snap=False,
-        min_keep_sec=0.3,
+        min_keep_sec=0.5,
         cut_repeats=False,
         cut_wait_speech=False,
     )

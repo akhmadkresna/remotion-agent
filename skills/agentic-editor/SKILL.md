@@ -58,7 +58,7 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
 1. **Inventory** — `ae ingest .` → `edit/takes_packed.md`
 2. **Converse** — describe material; ask shaped questions
 3. **Propose** radio-edit strategy (4–8 sentences) → **wait for confirm**
-4. **EDL suggest** — `ae edl-suggest .` (aggressive silence + wait-speech clamp + repeat-cut; style `radio_edit.*`) → review `edit/edl.suggest.json`
+4. **EDL suggest** — `ae edl-suggest .` (sentence-safe silence + wait-beat + repeat/ASR-overlap coalesce; style `radio_edit.*`) → review `edit/edl.suggest.json`
    → confirm → `--apply` or write `edit/edl.json`
 5. **Cut** — `ae cut .` → `edit/preview.mp4`
 6. **Cover** (if `sources.screen` exists):

@@ -61,7 +61,20 @@ camera_play:
     wide: 1.0
     medium: 1.22
     close: 1.42
+# Silence-cut radio-edit (ae edl-suggest). Tighter than classic CapCut pack.
+radio_edit:
+  silence_gap_sec: 0.5
+  gap_cut_sec: 0.5
+  hold_if_gap_sec: 5.0
+  hold_sec: 1.5
+  min_keep_sec: 0.4
+  pad_before_sec: 0.05
+  pad_after_sec: 0.08
 cover:
+  # Show screen when possible (tutorial default). Use mode: balanced for stricter gates.
+  mode: prefer_screen
+  screen_bias: 0.35
+  require_activity_for_deixis: false
   prefer_screen_when:
     - look at
     - look here
@@ -84,14 +97,14 @@ cover:
     - code
     - terminal
   jump_cut_cover: punch_in
-  min_hold_sec: 2.5
-  min_active_sec: 1.5
+  min_hold_sec: 2.0
+  min_active_sec: 1.0
   activity_fps: 2
-  activity_threshold: 0.035
-  merge_gap_sec: 0.8
-  off_hold_sec: 1.0
-  pad_before_sec: 0.4
-  pad_after_sec: 1.2
+  activity_threshold: 0.028
+  merge_gap_sec: 1.2
+  off_hold_sec: 1.5
+  pad_before_sec: 0.5
+  pad_after_sec: 1.5
 # Locked screen-explainer presentation (Remotion). Do not invent episode-local forks.
 screen_explainer:
   preset: cozy

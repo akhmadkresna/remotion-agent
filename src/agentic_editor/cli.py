@@ -1,4 +1,4 @@
-"""ae CLI — doctor, new, ingest, cut, cover, cover-suggest, overlay-suggest, mezzanine, draft, compose, qa, promote-check."""
+"""ae CLI — doctor, new, ingest, edl-suggest, cut, cover, cover-suggest, overlay-suggest, mezzanine, draft, compose, qa, promote-check."""
 
 from __future__ import annotations
 
@@ -215,13 +215,23 @@ def cmd_cover_suggest(args: argparse.Namespace) -> int:
     if "screen" not in sources:
         print("No screen source in project.yaml — nothing to suggest (full-cam only)", file=sys.stderr)
         return 1
-    suggestion = suggest_cover(episode, skip_activity_probe=bool(args.skip_activity))
+    suggestion = suggest_cover(
+        episode,
+        skip_activity_probe=bool(args.skip_activity),
+        mode=args.mode,
+        screen_bias=args.screen_bias,
+        activity_threshold=args.activity_threshold,
+        min_hold_sec=args.min_hold,
+        min_active_sec=args.min_active,
+        merge_gap_sec=args.merge_gap,
+    )
     out = write_cover_suggest(episode, suggestion)
     meta = suggestion.get("_meta") or {}
     events = suggestion.get("events") or []
     print(
         f"Wrote {out.relative_to(episode)} "
         f"({len(events)} screen_with_cam event(s); "
+        f"mode={meta.get('mode')}, bias={meta.get('screen_bias')}, "
         f"deixis={meta.get('deixis_hits', 0)}, activity_bins={meta.get('activity_bins', 0)})"
     )
     print("Review, copy into edit/cover.json (or merge events), then: ae cover .")
@@ -243,6 +253,43 @@ def cmd_cover_suggest(args: argparse.Namespace) -> int:
         print(f"Merged suggested events into {cover_path.relative_to(episode)}")
     return 0
 
+
+def cmd_edl_suggest(args: argparse.Namespace) -> int:
+    """Suggest silence-cut EDL → edit/edl.suggest.json (confirm before apply/cut)."""
+    from agentic_editor.editor.edl_suggest import suggest_edl, write_edl_suggest
+
+    episode = resolve_episode(args.episode)
+    suggestion = suggest_edl(
+        episode,
+        gap_cut_sec=args.gap_cut,
+        hold_if_gap_sec=args.hold_if_gap,
+        hold_sec=args.hold,
+        min_keep_sec=args.min_keep,
+        source_start=args.source_start,
+        source_end=args.source_end,
+    )
+    out = write_edl_suggest(episode, suggestion)
+    meta = suggestion.get("_meta") or {}
+    ranges = suggestion.get("ranges") or []
+    print(
+        f"Wrote {out.relative_to(episode)} "
+        f"({len(ranges)} ranges, keep={meta.get('keep_sec', 0):.1f}s; "
+        f"gap_cut={meta.get('gap_cut_sec')}, hold_if={meta.get('hold_if_gap_sec')}→{meta.get('hold_sec')}s)"
+    )
+    print("Review with the user, then: ae edl-suggest . --apply   # or copy into edit/edl.json")
+    print("Next: ae cut .")
+    if args.apply and ranges:
+        edl_path = episode / "edit" / "edl.json"
+        # Strip private meta for runtime EDL (keep a copy in suggest file)
+        payload = {
+            "sources": suggestion.get("sources") or {},
+            "ranges": ranges,
+            "grade": suggestion.get("grade"),
+            "_meta": meta,
+        }
+        edl_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        print(f"Wrote {edl_path.relative_to(episode)} (after confirm)")
+    return 0
 
 def cmd_overlay_suggest(args: argparse.Namespace) -> int:
     episode = resolve_episode(args.episode)
@@ -401,13 +448,46 @@ def build_parser() -> argparse.ArgumentParser:
     cut.add_argument("--quiet", action="store_true")
     cut.set_defaults(func=cmd_cut)
 
+    es = sub.add_parser(
+        "edl-suggest",
+        help="Suggest silence-cut EDL from cam transcript (confirm before apply/cut)",
+    )
+    es.add_argument("episode", nargs="?", default=".")
+    es.add_argument(
+        "--gap-cut",
+        type=float,
+        default=None,
+        help="Cut silences ≥ this many seconds (default from style radio_edit)",
+    )
+    es.add_argument(
+        "--hold-if-gap",
+        type=float,
+        default=None,
+        help="Gaps ≥ this keep a short hold instead of full cut (AI waits)",
+    )
+    es.add_argument(
+        "--hold",
+        type=float,
+        default=None,
+        help="Hold duration when collapsing long gaps",
+    )
+    es.add_argument("--min-keep", type=float, default=None, help="Drop ranges shorter than this")
+    es.add_argument("--source-start", type=float, default=None, help="Optional source window start")
+    es.add_argument("--source-end", type=float, default=None, help="Optional source window end")
+    es.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write edit/edl.json after user confirm (still review suggest first)",
+    )
+    es.set_defaults(func=cmd_edl_suggest)
+
     cov = sub.add_parser("cover", help="Merge EDL + cover.json → timeline.json")
     cov.add_argument("episode", nargs="?", default=".")
     cov.set_defaults(func=cmd_cover)
 
     cs = sub.add_parser(
         "cover-suggest",
-        help="Suggest screen_with_cam ranges from transcript deixis + screen activity",
+        help="Suggest screen_with_cam ranges (prefer_screen mode by default in tutorial)",
     )
     cs.add_argument("episode", nargs="?", default=".")
     cs.add_argument(
@@ -415,6 +495,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip ffmpeg screen activity probe (deixis-only)",
     )
+    cs.add_argument(
+        "--mode",
+        choices=("balanced", "prefer_screen"),
+        default=None,
+        help="balanced = deixis needs activity; prefer_screen = show screen when possible",
+    )
+    cs.add_argument(
+        "--screen-bias",
+        type=float,
+        default=None,
+        help="0..1 — lower activity gates, widen merge/pads (default from style)",
+    )
+    cs.add_argument("--activity-threshold", type=float, default=None)
+    cs.add_argument("--min-hold", type=float, default=None)
+    cs.add_argument("--min-active", type=float, default=None)
+    cs.add_argument("--merge-gap", type=float, default=None)
     cs.add_argument(
         "--apply",
         action="store_true",

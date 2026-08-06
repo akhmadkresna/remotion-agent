@@ -40,14 +40,28 @@ DEFAULT_KEYWORDS = [
 
 DEFAULT_COVER_CFG: dict[str, Any] = {
     "prefer_screen_when": DEFAULT_KEYWORDS,
-    "min_hold_sec": 2.5,
-    "min_active_sec": 1.5,
+    # balanced = deixis needs activity when bins exist
+    # prefer_screen = show screen whenever deixis OR activity; fill gaps; off_hold
+    "mode": "prefer_screen",
+    "screen_bias": 0.35,  # 0..1 — lowers activity gates, widens pads/merge
+    "require_activity_for_deixis": False,  # prefer_screen default
+    "min_hold_sec": 2.0,
+    "min_active_sec": 1.0,
     "activity_fps": 2,
-    "activity_threshold": 0.035,
-    "merge_gap_sec": 0.8,
-    "off_hold_sec": 1.0,
-    "pad_before_sec": 0.4,
-    "pad_after_sec": 1.2,
+    "activity_threshold": 0.028,
+    "merge_gap_sec": 1.2,
+    "off_hold_sec": 1.5,
+    "pad_before_sec": 0.5,
+    "pad_after_sec": 1.5,
+}
+
+DEFAULT_CAMERA_PLAY: dict[str, Any] = {
+    "snap_on_cuts": True,
+    "home": "medium",
+    "alt": "close",
+    "wide_on_resets": True,
+    "max_hold_sec": 7,
+    "scales": {"wide": 1.0, "medium": 1.22, "close": 1.42},
 }
 
 
@@ -70,7 +84,62 @@ def load_style_cover_config(style_name: str = "tutorial") -> dict[str, Any]:
         for k, v in cover.items():
             if v is not None:
                 cfg[k] = v
+    # Mode shortcuts
+    mode = str(cfg.get("mode") or "balanced").lower()
+    if mode == "prefer_screen" and "require_activity_for_deixis" not in (
+        cover if isinstance(cover, dict) else {}
+    ):
+        cfg["require_activity_for_deixis"] = False
+    elif mode == "balanced" and "require_activity_for_deixis" not in (
+        cover if isinstance(cover, dict) else {}
+    ):
+        cfg["require_activity_for_deixis"] = True
     return cfg
+
+
+def load_style_camera_play(style_name: str = "tutorial") -> dict[str, Any]:
+    """Load camera_play.* from style YAML; fall back to punchy defaults."""
+    cfg = dict(DEFAULT_CAMERA_PLAY)
+    path = framework_home() / "styles" / style_name / "style.md"
+    if not path.is_file():
+        return cfg
+    text = path.read_text(encoding="utf-8")
+    m = re.search(r"```ya?ml\s*\n(.*?)```", text, re.S | re.I)
+    if not m:
+        return cfg
+    try:
+        parsed = yaml.safe_load(m.group(1)) or {}
+    except yaml.YAMLError:
+        return cfg
+    cam = parsed.get("camera_play") or {}
+    if isinstance(cam, dict):
+        for k, v in cam.items():
+            if v is not None:
+                if k == "scales" and isinstance(v, dict):
+                    scales = dict(cfg.get("scales") or {})
+                    scales.update({sk: float(sv) for sk, sv in v.items()})
+                    cfg["scales"] = scales
+                else:
+                    cfg[k] = v
+    return cfg
+
+
+def apply_screen_bias(cover_cfg: dict[str, Any], bias: float | None = None) -> dict[str, Any]:
+    """Return cover cfg with thresholds relaxed by screen_bias (0..1)."""
+    out = dict(cover_cfg)
+    b = float(out.get("screen_bias", 0) if bias is None else bias)
+    b = max(0.0, min(1.0, b))
+    out["screen_bias"] = b
+    if b <= 0:
+        return out
+    out["activity_threshold"] = float(out.get("activity_threshold", 0.035)) * (1.0 - 0.5 * b)
+    out["min_active_sec"] = float(out.get("min_active_sec", 1.5)) * (1.0 - 0.4 * b)
+    out["min_hold_sec"] = max(1.2, float(out.get("min_hold_sec", 2.5)) * (1.0 - 0.25 * b))
+    out["merge_gap_sec"] = float(out.get("merge_gap_sec", 0.8)) * (1.0 + 0.75 * b)
+    out["pad_before_sec"] = float(out.get("pad_before_sec", 0.4)) * (1.0 + 0.35 * b)
+    out["pad_after_sec"] = float(out.get("pad_after_sec", 1.2)) * (1.0 + 0.35 * b)
+    out["off_hold_sec"] = float(out.get("off_hold_sec", 1.0)) * (1.0 + 0.5 * b)
+    return out
 
 
 def _word_text(w: dict[str, Any]) -> str:
@@ -308,25 +377,39 @@ def decide_screen_pip_windows(
     merge_gap_sec: float = 0.8,
     activity_threshold: float = 0.035,
     words: list[dict[str, Any]] | None = None,
+    mode: str = "balanced",
+    require_activity_for_deixis: bool | None = None,
+    off_hold_sec: float = 1.0,
 ) -> list[dict[str, Any]]:
     """
     use_screen_pip iff duration >= min_hold
       AND (deixis_hit OR sustained_activity >= min_active_sec)
-      AND screen_activity_in_window (some active bins / mean >= threshold)
+      AND (balanced: activity in window when bins exist;
+           prefer_screen: deixis may skip activity gate)
+
+    ``off_hold_sec`` extends activity-derived runs past the last active bin
+    so UI holds stay on screen briefly after motion stops.
     """
+    mode_l = str(mode or "balanced").lower()
+    if require_activity_for_deixis is None:
+        require_activity_for_deixis = mode_l != "prefer_screen"
+
     candidates: list[dict[str, Any]] = []
 
-    # From deixis — require screen activity when bins exist; else allow (agent refines)
+    # From deixis
     for hit in deixis:
         mean_act, active_sec = activity_in_window(activity_bins, hit["start"], hit["end"])
-        if activity_bins:
+        if activity_bins and require_activity_for_deixis:
             has_activity = active_sec > 0 or mean_act >= activity_threshold
             if not has_activity:
                 continue
+        end = float(hit["end"])
+        if activity_bins and off_hold_sec > 0:
+            end = end + float(off_hold_sec)
         candidates.append(
             {
                 "start": float(hit["start"]),
-                "end": float(hit["end"]),
+                "end": end,
                 "keyword": hit.get("keyword"),
                 "mean_activity": mean_act,
                 "note": f"deixis:{hit.get('keyword', '?')}",
@@ -334,7 +417,7 @@ def decide_screen_pip_windows(
             }
         )
 
-    # Sustained activity without deixis
+    # Sustained activity without deixis (+ off_hold tail)
     if activity_bins:
         run_start: float | None = None
         for b in activity_bins:
@@ -343,10 +426,10 @@ def decide_screen_pip_windows(
                     run_start = float(b["start"])
             else:
                 if run_start is not None:
-                    run_end = float(b["start"])
+                    run_end = float(b["start"]) + float(off_hold_sec)
                     if run_end - run_start >= min_active_sec:
-                        mean_act, active_sec = activity_in_window(
-                            activity_bins, run_start, run_end
+                        mean_act, _ = activity_in_window(
+                            activity_bins, run_start, float(b["start"])
                         )
                         candidates.append(
                             {
@@ -359,9 +442,9 @@ def decide_screen_pip_windows(
                         )
                     run_start = None
         if run_start is not None:
-            run_end = float(activity_bins[-1]["end"])
+            run_end = float(activity_bins[-1]["end"]) + float(off_hold_sec)
             if run_end - run_start >= min_active_sec:
-                mean_act, _ = activity_in_window(activity_bins, run_start, run_end)
+                mean_act, _ = activity_in_window(activity_bins, run_start, float(activity_bins[-1]["end"]))
                 candidates.append(
                     {
                         "start": run_start,
@@ -384,7 +467,12 @@ def decide_screen_pip_windows(
                     clipped.append({**c, "start": s, "end": e})
         candidates = clipped
 
-    merged = _merge_windows(candidates, gap=merge_gap_sec)
+    # prefer_screen: wider merge fills talk gaps between demo beats
+    effective_merge = merge_gap_sec
+    if mode_l == "prefer_screen":
+        effective_merge = max(merge_gap_sec, merge_gap_sec * 1.25)
+
+    merged = _merge_windows(candidates, gap=effective_merge)
 
     # Enforce min hold + snap to words
     out: list[dict[str, Any]] = []
@@ -393,7 +481,6 @@ def decide_screen_pip_windows(
         if words:
             start, end = snap_window_to_words(start, end, words)
         if end - start < min_hold_sec:
-            # try expand to min_hold centered if EDL allows — else drop
             mid = (start + end) / 2
             start = mid - min_hold_sec / 2
             end = mid + min_hold_sec / 2
@@ -401,11 +488,14 @@ def decide_screen_pip_windows(
                 start, end = snap_window_to_words(start, end, words)
             if end - start < min_hold_sec * 0.9:
                 continue
-        # Re-check activity confirmation when bins exist
-        if activity_bins:
+        # Re-check activity only in balanced mode (prefer_screen keeps deixis holds)
+        if activity_bins and require_activity_for_deixis:
             mean_act, active_sec = activity_in_window(activity_bins, start, end)
             if active_sec <= 0 and mean_act < activity_threshold:
                 continue
+            w["mean_activity"] = mean_act
+        elif activity_bins:
+            mean_act, _ = activity_in_window(activity_bins, start, end)
             w["mean_activity"] = mean_act
         reason = w.get("note") or "screen"
         if w.get("mean_activity") is not None and "activity:" not in str(reason):
@@ -418,7 +508,7 @@ def decide_screen_pip_windows(
                 "note": reason,
             }
         )
-    return _merge_windows(out, gap=merge_gap_sec)
+    return _merge_windows(out, gap=effective_merge)
 
 
 def suggest_cover(
@@ -426,11 +516,36 @@ def suggest_cover(
     *,
     activity_bins: list[dict[str, Any]] | None = None,
     skip_activity_probe: bool = False,
+    mode: str | None = None,
+    screen_bias: float | None = None,
+    activity_threshold: float | None = None,
+    min_hold_sec: float | None = None,
+    min_active_sec: float | None = None,
+    merge_gap_sec: float | None = None,
 ) -> dict[str, Any]:
     """Build a draft cover.json suggestion for an episode."""
     cfg = load_project(episode)
     style = str(cfg.get("style") or "tutorial")
     cover_cfg = load_style_cover_config(style)
+    if mode is not None:
+        cover_cfg["mode"] = mode
+        if str(mode).lower() == "prefer_screen":
+            cover_cfg["require_activity_for_deixis"] = False
+        elif str(mode).lower() == "balanced":
+            cover_cfg["require_activity_for_deixis"] = True
+    if screen_bias is not None:
+        cover_cfg["screen_bias"] = float(screen_bias)
+    if activity_threshold is not None:
+        cover_cfg["activity_threshold"] = float(activity_threshold)
+    if min_hold_sec is not None:
+        cover_cfg["min_hold_sec"] = float(min_hold_sec)
+    if min_active_sec is not None:
+        cover_cfg["min_active_sec"] = float(min_active_sec)
+    if merge_gap_sec is not None:
+        cover_cfg["merge_gap_sec"] = float(merge_gap_sec)
+
+    cover_cfg = apply_screen_bias(cover_cfg)
+    camera_play = load_style_camera_play(style)
     edit = episode / "edit"
 
     words = load_cam_words(edit)
@@ -469,17 +584,15 @@ def suggest_cover(
             merge_gap_sec=float(cover_cfg.get("merge_gap_sec", 0.8)),
             activity_threshold=float(cover_cfg.get("activity_threshold", 0.035)),
             words=words,
+            mode=str(cover_cfg.get("mode") or "balanced"),
+            require_activity_for_deixis=bool(
+                cover_cfg.get("require_activity_for_deixis", True)
+            ),
+            off_hold_sec=float(cover_cfg.get("off_hold_sec", 1.0)),
         )
 
     return {
-        "camera_play": {
-            "snap_on_cuts": True,
-            "home": "medium",
-            "alt": "close",
-            "wide_on_resets": True,
-            "max_hold_sec": 16,
-            "scales": {"wide": 1.0, "medium": 1.1, "close": 1.18},
-        },
+        "camera_play": camera_play,
         "events": events,
         "captions": [],
         "_meta": {
@@ -488,13 +601,19 @@ def suggest_cover(
             "activity_bins": len(bins),
             "suggested_events": len(events),
             "style": style,
+            "mode": cover_cfg.get("mode"),
+            "screen_bias": cover_cfg.get("screen_bias"),
             "cover_config": {
                 k: cover_cfg[k]
                 for k in (
+                    "mode",
+                    "screen_bias",
+                    "require_activity_for_deixis",
                     "min_hold_sec",
                     "min_active_sec",
                     "activity_threshold",
                     "merge_gap_sec",
+                    "off_hold_sec",
                     "prefer_screen_when",
                 )
                 if k in cover_cfg

@@ -65,27 +65,23 @@ Kinds: `chapter` · `emphasis` · `diagram` · `chip`. See skill hard rule 11.
 
 ## When to switch (detectability formula)
 
-`ae cover-suggest` scores windows with two signals:
+`ae cover-suggest` scores windows with two signals + a **mode**:
 
-1. **Transcript deixis** — cam ASR phrases from style pack `cover.prefer_screen_when` (lihat, klik, UI, …), padded −0.4s / +1.2s, snapped to words
-2. **Screen activity** — ffmpeg samples screen at ~2 fps; mean abs frame-diff per 1s bin; active if ≥ `activity_threshold` (default 0.035)
+| Mode | Behavior |
+|------|----------|
+| `prefer_screen` (tutorial default) | Deixis **or** activity → screen; deixis may keep screen even if idle; `off_hold_sec` extends past last motion; `screen_bias` lowers gates |
+| `balanced` | Deixis needs activity confirmation when bins exist |
 
-```
-use_screen_pip  iff  has_screen_source
-                 AND duration >= min_hold (2.5s)
-                 AND (deixis_hit OR sustained_activity >= min_active_sec)
-                 AND screen_activity_in_window
-```
-
-Else stay full cam. Adjacent windows merge with gap ≤ 0.8s.
+1. **Transcript deixis** — cam ASR phrases from style pack `cover.prefer_screen_when`
+2. **Screen activity** — ffmpeg ~2 fps frame-diff bins
 
 ```bash
-ae cover-suggest .              # → edit/cover.suggest.json
-ae cover-suggest . --apply      # merge events into edit/cover.json
+ae cover-suggest .                         # style mode (prefer_screen)
+ae cover-suggest . --mode prefer_screen --screen-bias 0.5
+ae cover-suggest . --mode balanced         # stricter
+ae cover-suggest . --apply                 # only after confirm
 ae cover .
 ```
-
-Do not invent screen ranges with no deixis and no activity.
 
 ## Studio preflight (do not regress)
 

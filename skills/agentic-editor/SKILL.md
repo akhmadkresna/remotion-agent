@@ -58,12 +58,14 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
 1. **Inventory** — `ae ingest .` → `edit/takes_packed.md`
 2. **Converse** — describe material; ask shaped questions
 3. **Propose** radio-edit strategy (4–8 sentences) → **wait for confirm**
-4. **Write** `edit/edl.json` (`sources` + `ranges[]` with `source`/`start`/`end`)
+4. **EDL suggest** — `ae edl-suggest .` (silence-cut; style `radio_edit.*`) → review `edit/edl.suggest.json`
+   → confirm → `--apply` or write `edit/edl.json`
 5. **Cut** — `ae cut .` → `edit/preview.mp4`
 6. **Cover** (if `sources.screen` exists):
-   - Run `ae cover-suggest .` → review `edit/cover.suggest.json`
-   - Propose full-cam vs `screen_with_cam` ranges (formula below) → **wait for confirm**
+   - Run `ae cover-suggest .` (tutorial default **`prefer_screen`**) → review `edit/cover.suggest.json`
+   - Propose full-cam vs `screen_with_cam` → **wait for confirm**
    - Write `edit/cover.json` → `ae cover .`
+   - Stricter gate: `ae cover-suggest . --mode balanced`
 6b. **Overlays (A-roll MG)** — chapter / emphasis / diagram / chip:
    - Run `ae overlay-suggest .` → `edit/overlays.suggest.json` (includes `framing_events`)
    - Propose sparse Bold-mist plan synced to cover + zoom → **wait for confirm**

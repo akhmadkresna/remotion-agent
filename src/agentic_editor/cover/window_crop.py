@@ -512,29 +512,34 @@ def detect_window_crop(
 
     search_x = max(4, (wr - wl) // 20)
     search_y = max(4, (wb - wt) // 16)
-    # Snap only near the provisional border — do not walk out into pillars/wallpaper.
+    # Left: never snap inward (that bites the sidebar). Only refine toward the
+    # pillar / outer border, then keep a small outward pad.
+    wl0 = wl
+    wr0 = wr
     wl = _snap_vertical_edge(
         buf,
         sw,
         sh,
-        x_guess=wl,
+        x_guess=wl0,
         y0=wt,
         y1=wb,
-        search_left=3,
-        search_right=search_x,
+        search_left=max(6, search_x),
+        search_right=2,
         want_dark_on_right=True,
     )
+    wl = min(wl, wl0)  # refuse inward overcrop on the left
     wr = _snap_vertical_edge(
         buf,
         sw,
         sh,
-        x_guess=wr,
+        x_guess=wr0,
         y0=wt,
         y1=wb,
         search_left=search_x,
         search_right=3,
         want_dark_on_right=False,
     )
+    wr = max(wr, wr0)  # refuse inward overcrop on the right
     # Top: allow searching upward so title bar is not bitten.
     wt = _snap_horizontal_edge(
         buf,
@@ -578,14 +583,15 @@ def detect_window_crop(
 
     sx = w / sw
     sy = h / sh
-    pad_x = max(0, round((wr - wl) * window_relative_pad))
-    # Bias top outward so title bars survive edge snap noise.
+    # Prefer expanding left slightly (sidebar/title controls) over inward pad.
+    left_out = max(2, round((wr - wl) * 0.01))
+    pad_right = max(0, round((wr - wl) * window_relative_pad))
     pad_top = max(1, round((wb - wt) * 0.004))
     pad_bot = max(0, round((wb - wt) * window_relative_pad))
 
-    x = int(max(0, (wl + pad_x) * sx))
+    x = int(max(0, (wl - left_out) * sx))
     y = int(max(0, (wt + chrome - pad_top) * sy))
-    cw = int((wr - wl + 1 - pad_x * 2) * sx)
+    cw = int((wr - (wl - left_out) + 1 - pad_right) * sx)
     ch = int((wb - (wt + chrome) + 1 + pad_top - pad_bot) * sy)
 
     x = max(0, min(w - 2, x))

@@ -78,6 +78,29 @@ def test_full_cam_not_muted():
     assert len(tl["clips"]) == 1
     assert tl["clips"][0]["source"] == "cam"
     assert tl["clips"][0]["muted"] is False
+
+
+def test_short_screen_does_not_swallow_whole_keep():
+    """A 5s screen event inside a 40s keep must leave full-cam on both sides."""
+    edl = _edl([{"source": "cam", "start": 0.0, "end": 40.0, "note": "talk"}])
+    cover = {
+        "camera_play": {"snap_on_cuts": False, "max_hold_sec": 60},
+        "events": [{"type": "screen_with_cam", "start": 10.0, "end": 15.0}],
+    }
+    tl = build_timeline_from_edl_and_cover(edl, cover, fps=30)
+    main = [c for c in tl["clips"] if c["layout"] in ("full", "float_centered")]
+    pip = [c for c in tl["clips"] if c["layout"] == "pip_corner"]
+    layouts = [c["layout"] for c in main]
+    assert layouts.count("float_centered") == 1
+    assert layouts.count("full") >= 2
+    float_c = next(c for c in main if c["layout"] == "float_centered")
+    assert abs(float_c["durationSec"] - 5.0) < 0.05
+    assert len(pip) == 1
+    assert abs(pip[0]["durationSec"] - 5.0) < 0.05
+    assert abs(pip[0]["fromSec"] - float_c["fromSec"]) < 0.05
+    # Full-cam duration still dominates
+    full_dur = sum(c["durationSec"] for c in main if c["layout"] == "full")
+    assert full_dur >= 34.0
     assert tl["clips"][0]["layout"] == "full"
 
 

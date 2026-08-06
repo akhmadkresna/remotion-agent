@@ -100,6 +100,78 @@ def _clip_muted(source: str) -> bool:
     return str(source) != "cam"
 
 
+def _screen_intervals_in_range(
+    cover_events: list[dict[str, Any]],
+    range_start: float,
+    range_end: float,
+) -> list[tuple[float, float, str]]:
+    """Merged screen-intent intervals clipped to ``[range_start, range_end]``.
+
+    Returns list of (start, end, mode) where mode is ``screen_with_cam`` or ``screen``.
+    """
+    raw: list[tuple[float, float, str]] = []
+    for ev in cover_events:
+        kind = str(ev.get("type") or "").lower()
+        if kind in SCREEN_WITH_CAM_TYPES:
+            mode = "screen_with_cam"
+        elif kind in SCREEN_FULL_TYPES:
+            mode = "screen"
+        else:
+            continue
+        s = max(float(ev.get("start", 0)), range_start)
+        e = min(float(ev.get("end", 0)), range_end)
+        if e - s >= 0.15:
+            raw.append((s, e, mode))
+    if not raw:
+        return []
+    raw.sort(key=lambda x: x[0])
+    merged: list[tuple[float, float, str]] = [raw[0]]
+    for s, e, mode in raw[1:]:
+        ps, pe, pm = merged[-1]
+        if s <= pe + 0.05:
+            # Prefer screen_with_cam when either side wants PIP
+            m = "screen_with_cam" if "with_cam" in (pm + mode) or pm == "screen_with_cam" or mode == "screen_with_cam" else mode
+            if pm == "screen_with_cam" or mode == "screen_with_cam":
+                m = "screen_with_cam"
+            merged[-1] = (ps, max(pe, e), m)
+        else:
+            merged.append((s, e, mode))
+    return merged
+
+
+def partition_range_by_cover(
+    range_start: float,
+    range_end: float,
+    cover_events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Split one EDL keep into full-cam vs screen(+PIP) subclips.
+
+    Critical: a short screen event must NOT force the whole keep to float.
+    PIP (cam audio + face) must cover the entire screen subclip, not just the
+    original short event window.
+    """
+    screens = _screen_intervals_in_range(cover_events, range_start, range_end)
+    if not screens:
+        return [{"start": range_start, "end": range_end, "mode": "full_cam"}]
+
+    parts: list[dict[str, Any]] = []
+    cursor = range_start
+    for s, e, mode in screens:
+        if s > cursor + 0.05:
+            parts.append({"start": cursor, "end": s, "mode": "full_cam"})
+        parts.append(
+            {
+                "start": s,
+                "end": e,
+                "mode": "screen_with_cam" if mode == "screen_with_cam" else "screen",
+            }
+        )
+        cursor = e
+    if range_end > cursor + 0.05:
+        parts.append({"start": cursor, "end": range_end, "mode": "full_cam"})
+    return parts
+
+
 def build_timeline_from_edl_and_cover(
     edl: dict[str, Any],
     cover: dict[str, Any] | None,
@@ -138,50 +210,10 @@ def build_timeline_from_edl_and_cover(
     out_t = 0.0
     global_clip_i = 0
     for i, r in enumerate(edl["ranges"]):
-        src = r["source"]
         note = str(r.get("note") or "")
         range_start = float(r["start"])
         range_end = float(r["end"])
-        dur_total = range_end - range_start
-
-        visual_src = src
-        layout = "full"
-        pip_ev: dict[str, Any] | None = None
-        screen_visual = False
-
-        for ev in _events_overlapping(cover_events, range_start, range_end):
-            kind = (ev.get("type") or "").lower()
-            if kind in SCREEN_WITH_CAM_TYPES:
-                visual_src = ev.get("source") or "screen"
-                screen_visual = True
-                layout = float_presentation
-                pip_ev = {
-                    "start": ev.get("start", range_start),
-                    "end": ev.get("end", range_end),
-                    "source": ev.get("pip_source") or "cam",
-                    "note": ev.get("note"),
-                }
-            elif kind in SCREEN_FULL_TYPES:
-                visual_src = ev.get("source") or "screen"
-                screen_visual = True
-                layout = float_presentation
-            elif kind in PIP_TYPES:
-                pip_ev = dict(ev)
-
-        # Screen mode is always screen + cam PIP (cam carries audio).
-        if screen_visual and pip_ev is None:
-            pip_ev = {
-                "start": range_start,
-                "end": range_end,
-                "source": "cam",
-                "note": "auto cam for audio/pip",
-            }
-        elif pip_ev is not None and not pip_ev.get("source"):
-            # Default overlay: cam when main is screen; else legacy screen-over-cam.
-            pip_ev = {
-                **pip_ev,
-                "source": "cam" if screen_visual or visual_src == "screen" else "screen",
-            }
+        range_out_start = out_t
 
         # Emphasis punches / punch-outs (output timeline coords)
         for ev in _events_overlapping(cover_events, range_start, range_end):
@@ -192,7 +224,7 @@ def build_timeline_from_edl_and_cover(
             effects.append(
                 {
                     "type": "punch_out" if kind == "punch_out" else "punch_in",
-                    "fromSec": out_t + local,
+                    "fromSec": range_out_start + local,
                     "durationSec": float(
                         ev.get("duration", max(0.1, float(ev["end"]) - float(ev["start"])))
                     ),
@@ -200,82 +232,85 @@ def build_timeline_from_edl_and_cover(
                 }
             )
 
-        # Do not digital-multicam-crop UI screen recordings.
-        do_snap = snap and layout == "full" and not screen_visual
-        segments = (
-            _subdivide_range(range_start, range_end, max_hold=max_hold)
-            if do_snap
-            else [(range_start, range_end)]
-        )
+        parts = partition_range_by_cover(range_start, range_end, cover_events)
+        for part in parts:
+            seg_start = float(part["start"])
+            seg_end = float(part["end"])
+            mode = str(part["mode"])
+            screen_visual = mode in ("screen_with_cam", "screen")
+            visual_src = "screen" if screen_visual else str(r["source"])
+            layout = float_presentation if screen_visual else "full"
 
-        for seg_i, (seg_start, seg_end) in enumerate(segments):
-            seg_dur = seg_end - seg_start
             if screen_visual:
-                framing, motion, scale = "wide", "hold", 1.0
+                segments = [(seg_start, seg_end)]
             else:
-                framing, motion = _pick_base_framing(
-                    range_index=global_clip_i, note=note, camera_play=camera_play
+                do_snap = snap and layout == "full"
+                segments = (
+                    _subdivide_range(seg_start, seg_end, max_hold=max_hold)
+                    if do_snap
+                    else [(seg_start, seg_end)]
                 )
-                scale = _framing_scale(framing, scales)
 
-                # Explicit framing events win for this sub-segment
-                for ev in _events_overlapping(cover_events, seg_start, seg_end):
-                    kind = (ev.get("type") or "").lower()
-                    if kind != "framing":
-                        continue
-                    framing = str(ev.get("framing") or framing)
-                    motion = str(ev.get("motion") or motion)
-                    scale = _framing_scale(framing, scales, ev.get("scale"))
+            part_out_start = out_t
+            for seg_s, seg_e in segments:
+                seg_dur = seg_e - seg_s
+                if screen_visual:
+                    framing, motion, scale = "wide", "hold", 1.0
+                else:
+                    framing, motion = _pick_base_framing(
+                        range_index=global_clip_i, note=note, camera_play=camera_play
+                    )
+                    scale = _framing_scale(framing, scales)
+                    for ev in _events_overlapping(cover_events, seg_s, seg_e):
+                        kind = (ev.get("type") or "").lower()
+                        if kind != "framing":
+                            continue
+                        framing = str(ev.get("framing") or framing)
+                        motion = str(ev.get("motion") or motion)
+                        scale = _framing_scale(framing, scales, ev.get("scale"))
+                    if motion == "hold" and seg_dur >= 12:
+                        motion = "drift"
+                    if motion == "snap" and seg_dur >= 14 and framing != "wide":
+                        motion = "drift"
 
-                if motion == "hold" and seg_dur >= 12:
-                    motion = "drift"
-                if motion == "snap" and seg_dur >= 14 and framing != "wide":
-                    motion = "drift"
+                clips.append(
+                    {
+                        "id": f"a-{len(clips)}",
+                        "track": "a_roll",
+                        "source": visual_src,
+                        "sourceIn": seg_s,
+                        "sourceOut": seg_e,
+                        "fromSec": out_t,
+                        "durationSec": seg_dur,
+                        "layout": layout,
+                        "framing": framing,
+                        "scale": scale,
+                        "motion": motion,
+                        "muted": _clip_muted(visual_src),
+                    }
+                )
+                out_t += seg_dur
+                global_clip_i += 1
 
-            clips.append(
-                {
-                    "id": f"a-{len(clips)}",
-                    "track": "a_roll",
-                    "source": visual_src,
-                    "sourceIn": seg_start,
-                    "sourceOut": seg_end,
-                    "fromSec": out_t,
-                    "durationSec": seg_dur,
-                    "layout": layout,
-                    "framing": framing,
-                    "scale": scale,
-                    "motion": motion,
-                    "muted": _clip_muted(visual_src),
-                }
-            )
-            out_t += seg_dur
-            global_clip_i += 1
-
-        if pip_ev is not None:
-            local = max(0.0, float(pip_ev.get("start", range_start)) - range_start)
-            pip_dur = min(
-                dur_total - local,
-                float(pip_ev.get("end", range_end)) - float(pip_ev.get("start", range_start)),
-            )
-            # pip sits on the parent range start; output time already advanced — place relative to range
-            pip_from = out_t - dur_total + local
-            pip_source = str(pip_ev.get("source") or "cam")
-            clips.append(
-                {
-                    "id": f"pip-{len(clips)}",
-                    "track": "overlay",
-                    "source": pip_source,
-                    "sourceIn": float(pip_ev.get("start", range_start)),
-                    "sourceOut": float(pip_ev.get("end", range_end)),
-                    "fromSec": max(0.0, pip_from),
-                    "durationSec": max(0.05, pip_dur),
-                    "layout": "pip_corner",
-                    "framing": "medium",
-                    "scale": 1.0,
-                    "motion": "hold",
-                    "muted": _clip_muted(pip_source),
-                }
-            )
+            # PIP covers the entire screen subclip (face + cam audio)
+            if screen_visual:
+                part_dur = seg_end - seg_start
+                clips.append(
+                    {
+                        "id": f"pip-{len(clips)}",
+                        "track": "overlay",
+                        "source": "cam",
+                        "sourceIn": seg_start,
+                        "sourceOut": seg_end,
+                        "fromSec": part_out_start,
+                        "durationSec": max(0.05, part_dur),
+                        "layout": "pip_corner",
+                        "framing": "medium",
+                        "scale": 1.0,
+                        "motion": "hold",
+                        "muted": False,
+                    }
+                )
 
     sources = dict(edl.get("sources") or {})
     return {

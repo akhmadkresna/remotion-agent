@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from agentic_editor.compose.mezzanine import resolve_compose_sources
 from agentic_editor.cover import build_timeline_from_edl_and_cover, write_timeline
 from agentic_editor.editor.edl import load_edl
 from agentic_editor.paths import framework_home
@@ -23,10 +24,40 @@ def remotion_kit_dir() -> Path:
     return framework_home() / "packages" / "remotion-kit"
 
 
+def _pnpm_cmd() -> str:
+    """Resolve pnpm for subprocess (Windows: prefer .cmd over .ps1 shim)."""
+    if os.name == "nt":
+        for name in ("pnpm.cmd", "pnpm.exe", "pnpm"):
+            found = shutil.which(name)
+            if found:
+                return found
+    found = shutil.which("pnpm")
+    if found:
+        return found
+    raise FileNotFoundError(
+        "pnpm not found on PATH — install pnpm, then retry ae compose"
+    )
+
+
+def _remotion_cli(kit: Path) -> list[str]:
+    """Prefer local remotion bin; fall back to pnpm exec."""
+    if os.name == "nt":
+        local = kit / "node_modules" / ".bin" / "remotion.CMD"
+    else:
+        local = kit / "node_modules" / ".bin" / "remotion"
+    if local.is_file():
+        return [str(local)]
+    return [_pnpm_cmd(), "exec", "remotion"]
+
+
 def stage_sources_for_remotion(
     abs_sources: dict[str, str], *, verbose: bool = True
 ) -> dict[str, str]:
-    """Hardlink/copy episode media into remotion-kit/public for Studio HTTP serve.
+    """Copy episode media into remotion-kit/public for Studio HTTP serve.
+
+    Always **copy** — never hardlink. On Windows, overwriting a hardlinked
+    ``public/ae-media/*.mp4`` rewrites the same inode as episode ``raw/``, which
+    can destroy masters when draft proxies are copied into public.
 
     Remotion cannot load absolute filesystem paths in the browser — only ``public/``
     via ``staticFile()``. Symlinks that escape ``public/`` are also rejected.
@@ -39,19 +70,29 @@ def stage_sources_for_remotion(
 
     staged: dict[str, str] = {}
     for name, abs_path in abs_sources.items():
-        src = Path(abs_path)
+        src = Path(abs_path).resolve()
         if not src.is_file():
             raise FileNotFoundError(f"Source {name!r} missing: {src}")
         dest_name = f"{name}{src.suffix.lower()}"
         dest = public / dest_name
         if dest.exists() or dest.is_symlink():
             dest.unlink()
-        try:
-            os.link(src.resolve(), dest)
-        except OSError:
-            shutil.copy2(src, dest)
+        shutil.copy2(src, dest)
         if not dest.is_file():
             raise RuntimeError(f"Failed to stage source {name!r} into {dest}")
+        # Guaranteed independent file — overwriting dest must not touch src.
+        if dest.resolve() == src:
+            raise RuntimeError(
+                f"staged path for {name!r} resolves to source {src} — refusing"
+            )
+        try:
+            if os.path.samefile(src, dest):
+                raise RuntimeError(
+                    f"staged {dest} is the same file as source {src} "
+                    "(hardlink/symlink) — refusing to protect raw masters"
+                )
+        except OSError:
+            pass
         # path relative to public/ — SourceClip wraps with staticFile()
         staged[name] = f"ae-media/{dest_name}"
         if verbose:
@@ -113,7 +154,11 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
             p = (edit / p).resolve()
         abs_sources.setdefault(name, str(p))
 
-    staged_sources = stage_sources_for_remotion(abs_sources, verbose=verbose)
+    # Prefer edit/mezzanine/* (deliverable size) over multi-GB raw masters.
+    compose_sources = resolve_compose_sources(
+        episode, abs_sources, cfg, verbose=verbose
+    )
+    staged_sources = stage_sources_for_remotion(compose_sources, verbose=verbose)
 
     edl_abs = dict(edl)
     edl_abs["sources"] = staged_sources
@@ -123,15 +168,36 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
     if cover_path.is_file():
         cover = json.loads(cover_path.read_text(encoding="utf-8"))
 
+    from agentic_editor.cover.style_load import load_overlays, load_screen_explainer
+
+    style_name = str(cfg.get("style") or "tutorial")
+    screen_explainer = load_screen_explainer(style_name)
+    overlays = load_overlays(style_name)
+
     timeline = build_timeline_from_edl_and_cover(
         edl_abs,
         cover,
         fps=int(cfg.get("fps", 30)),
         width=int(cfg.get("width", 1920)),
         height=int(cfg.get("height", 1080)),
+        screen_explainer=screen_explainer,
+        overlays=overlays,
     )
     timeline["sources"] = staged_sources
-    timeline["sourcePaths"] = abs_sources  # absolute originals for tooling only
+    # absolute paths for tooling: compose media + raw masters
+    timeline["sourcePaths"] = compose_sources
+    timeline["rawSourcePaths"] = abs_sources
+
+    # Dynamic smart window crop per float_centered clip (midpoint sample).
+    crop_cfg = ((screen_explainer.get("screen") or {}).get("crop") or {})
+    if str(crop_cfg.get("mode") or "") == "smart_window_detect":
+        _attach_smart_window_crops(
+            timeline,
+            abs_sources,
+            crop_cfg=crop_cfg,
+            episode=episode,
+            verbose=verbose,
+        )
 
     out = edit / "timeline.json"
     write_timeline(out, timeline)
@@ -143,12 +209,173 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
         msg = "compose preflight failed:\n  - " + "\n  - ".join(errors)
         raise RuntimeError(msg)
 
+    from agentic_editor.compose.quality import audit_timeline_quality, format_audit
+
+    q_err, q_warn = audit_timeline_quality(timeline, cover=cover)
+    if verbose and (q_err or q_warn):
+        print("• quality audit:")
+        for line in format_audit(q_err, q_warn).splitlines():
+            print(f"  {line}")
+    if q_err:
+        raise RuntimeError(
+            "compose quality gate failed:\n  - " + "\n  - ".join(q_err)
+        )
+
     if verbose:
         print(f"• timeline → {out.relative_to(episode)}")
         print(f"• props → {props.relative_to(episode)}")
         print(f"• duration {timeline['durationSec']:.1f}s / {timeline['durationInFrames']} frames")
         print("• preflight OK (staged public media + non-empty timeline)")
     return out
+
+
+def prepare_draft(
+    episode: Path,
+    *,
+    limit_sec: float = 120.0,
+    verbose: bool = True,
+) -> Path:
+    """Prepare compose, then write a correctly sliced draft props file.
+
+    Always slices via ``draft_slice.slice_timeline`` (fromSec-aware) so overlays
+    are not silently dropped.
+    """
+    from agentic_editor.compose.draft_slice import slice_timeline
+    from agentic_editor.compose.quality import audit_timeline_quality, format_audit
+
+    prepare_compose(episode, verbose=verbose)
+    props_path = episode / "edit" / "remotion-props.json"
+    full = json.loads(props_path.read_text(encoding="utf-8"))
+    timeline = full.get("timeline") or full
+    sliced = slice_timeline(timeline, limit_sec)
+
+    cover = None
+    cover_path = episode / "edit" / "cover.json"
+    if cover_path.is_file():
+        cover = json.loads(cover_path.read_text(encoding="utf-8"))
+    q_err, q_warn = audit_timeline_quality(sliced, cover=cover)
+    if verbose and (q_err or q_warn):
+        print("• draft quality audit:")
+        for line in format_audit(q_err, q_warn).splitlines():
+            print(f"  {line}")
+    if q_err:
+        raise RuntimeError("draft quality gate failed:\n  - " + "\n  - ".join(q_err))
+
+    drafts = episode / "edit" / "drafts"
+    drafts.mkdir(parents=True, exist_ok=True)
+    tag = int(limit_sec) if float(limit_sec).is_integer() else limit_sec
+    out = drafts / f"remotion-props-{tag}s.json"
+    out.write_text(json.dumps({"timeline": sliced}, indent=2) + "\n", encoding="utf-8")
+    if verbose:
+        n_ov = len(sliced.get("overlays") or [])
+        n_fx = len(sliced.get("effects") or [])
+        print(
+            f"• draft props → {out.relative_to(episode)} "
+            f"({limit_sec:.0f}s, {len(sliced.get('clips') or [])} clips, "
+            f"{n_ov} overlays, {n_fx} effects)"
+        )
+    return out
+
+
+def _load_stable_window_crop(episode: Path) -> dict[str, Any] | None:
+    """Prefer hand-tuned / verified edit/window_crop.json when present."""
+    path = episode / "edit" / "window_crop.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    stable = data.get("stable") if isinstance(data, dict) else None
+    if not isinstance(stable, dict) or not stable.get("ok", True):
+        return None
+    norm = stable.get("normalized")
+    if not isinstance(norm, dict):
+        return None
+    try:
+        return {
+            "normalized": {
+                "x": float(norm["x"]),
+                "y": float(norm["y"]),
+                "w": float(norm["w"]),
+                "h": float(norm["h"]),
+            },
+            "px": {
+                "x": int(stable["x"]),
+                "y": int(stable["y"]),
+                "w": int(stable["w"]),
+                "h": int(stable["h"]),
+            },
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _attach_smart_window_crops(
+    timeline: dict[str, Any],
+    abs_sources: dict[str, str],
+    *,
+    crop_cfg: dict[str, Any],
+    episode: Path | None = None,
+    verbose: bool = True,
+) -> None:
+    """Annotate float_centered clips with normalized windowCrop from pixel detect."""
+    from agentic_editor.cover.window_crop import detect_window_crop
+
+    stable = _load_stable_window_crop(episode) if episode is not None else None
+    if stable is not None:
+        n = 0
+        for clip in timeline.get("clips") or []:
+            if clip.get("layout") != "float_centered":
+                continue
+            clip["windowCrop"] = dict(stable["normalized"])
+            clip["windowCropPx"] = dict(stable["px"])
+            n += 1
+        if verbose and n:
+            print(
+                f"• smart_window_detect → {n} float clip(s) "
+                f"(stable edit/window_crop.json)"
+            )
+        return
+
+    kwargs = {
+        "analysis_max_width": int(crop_cfg.get("analysisMaxWidth") or 480),
+        "chrome_side_inset_frac_max": float(
+            crop_cfg.get("chromeSideInsetFracMax") or 0.12
+        ),
+        "window_relative_pad": float(crop_cfg.get("windowRelativePad") or 0.003),
+    }
+    cache: dict[tuple[str, float], dict[str, Any]] = {}
+    n = 0
+    for clip in timeline.get("clips") or []:
+        if clip.get("layout") != "float_centered":
+            continue
+        src_name = str(clip.get("source") or "")
+        abs_path = abs_sources.get(src_name)
+        if not abs_path or not Path(abs_path).is_file():
+            continue
+        mid = float(clip.get("sourceIn") or 0) + float(clip.get("durationSec") or 0) / 2
+        mid = round(mid, 2)
+        key = (src_name, mid)
+        if key not in cache:
+            try:
+                crop = detect_window_crop(abs_path, t_sec=mid, **kwargs)
+                cache[key] = crop.as_dict()
+            except Exception as exc:  # noqa: BLE001 — compose must not die on crop
+                if verbose:
+                    print(f"• window crop skipped for {src_name}@{mid}s: {exc}")
+                cache[key] = {}
+        if cache[key]:
+            clip["windowCrop"] = cache[key]["normalized"]
+            clip["windowCropPx"] = {
+                "x": cache[key]["x"],
+                "y": cache[key]["y"],
+                "w": cache[key]["w"],
+                "h": cache[key]["h"],
+            }
+            n += 1
+    if verbose and n:
+        print(f"• smart_window_detect → {n} float clip(s)")
 
 
 def run_studio(episode: Path) -> None:
@@ -167,9 +394,7 @@ def run_studio(episode: Path) -> None:
     if not (kit / "package.json").is_file():
         raise FileNotFoundError(f"Remotion kit missing at {kit}")
     cmd = [
-        "pnpm",
-        "exec",
-        "remotion",
+        *_remotion_cli(kit),
         "studio",
         "src/index.ts",
         "--props",
@@ -180,7 +405,102 @@ def run_studio(episode: Path) -> None:
     subprocess.run(cmd, cwd=str(kit), env=env, check=True)
 
 
-def render_compose(episode: Path, *, output: Path | None = None) -> Path:
+def find_nvenc_ffmpeg_bin_dir() -> Path | None:
+    """Directory containing an ffmpeg.exe that lists h264_nvenc (Windows/Linux)."""
+    candidates: list[Path] = []
+    which = shutil.which("ffmpeg")
+    if which:
+        candidates.append(Path(which).resolve().parent)
+    # Common WinGet full_build (has NVENC); Remotion's bundled ffmpeg often does not
+    local = os.environ.get("LOCALAPPDATA") or ""
+    if local:
+        winget = Path(local) / "Microsoft" / "WinGet" / "Packages"
+        if winget.is_dir():
+            candidates.extend(winget.glob("Gyan.FFmpeg*/ffmpeg-*-full_build/bin"))
+    env_bin = os.environ.get("AE_FFMPEG_BIN_DIR") or os.environ.get("REMOTION_FFMPEG_BINARIES")
+    if env_bin:
+        candidates.insert(0, Path(env_bin))
+
+    seen: set[Path] = set()
+    for d in candidates:
+        try:
+            d = d.resolve()
+        except OSError:
+            continue
+        if d in seen or not d.is_dir():
+            continue
+        seen.add(d)
+        exe = d / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+        if not exe.is_file():
+            continue
+        try:
+            proc = subprocess.run(
+                [str(exe), "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        blob = (proc.stdout or "") + (proc.stderr or "")
+        if "h264_nvenc" in blob:
+            return d
+    return None
+
+
+def remotion_render_accel_args(
+    *,
+    nvenc: bool = False,
+    gl: str | None = None,
+    verbose: bool = True,
+) -> list[str]:
+    """Extra ``remotion render`` flags for GPU encode / Chrome GL.
+
+    NVENC only speeds *encoding*. Frame render still runs in Chrome; ``--gl``
+    can help that path on NVIDIA machines (``angle`` is the usual Windows pick).
+    """
+    args: list[str] = []
+    if gl:
+        args.extend(["--gl", str(gl)])
+    if not nvenc:
+        return args
+
+    bin_dir = find_nvenc_ffmpeg_bin_dir()
+    if bin_dir is None:
+        if verbose:
+            print(
+                "• NVENC requested but no h264_nvenc ffmpeg found — "
+                "install Gyan full FFmpeg or set AE_FFMPEG_BIN_DIR; "
+                "falling back to software encode"
+            )
+        return args
+
+    # Remotion: hardwareAcceleration + binariesDirectory (Windows needs external ffmpeg)
+    args.extend(
+        [
+            "--hardware-acceleration",
+            "if-possible",
+            "--binaries-directory",
+            str(bin_dir),
+            # CRF incompatible with NVENC — bitrate mode
+            "--video-bitrate",
+            "8M",
+        ]
+    )
+    if verbose:
+        print(f"• NVENC: ffmpeg binaries → {bin_dir}")
+        print("• Remotion --hardware-acceleration if-possible (--video-bitrate 8M)")
+    return args
+
+
+def render_compose(
+    episode: Path,
+    *,
+    output: Path | None = None,
+    nvenc: bool = False,
+    gl: str | None = None,
+) -> Path:
     prepare_compose(episode)
     kit = remotion_kit_dir()
     props = episode / "edit" / "remotion-props.json"
@@ -189,16 +509,59 @@ def render_compose(episode: Path, *, output: Path | None = None) -> Path:
     env = os.environ.copy()
     env["AE_TIMELINE_PROPS"] = str(props)
     env["AE_EPISODE"] = str(episode.resolve())
+    accel = remotion_render_accel_args(nvenc=nvenc, gl=gl)
     cmd = [
-        "pnpm",
-        "exec",
-        "remotion",
+        *_remotion_cli(kit),
         "render",
         "src/index.ts",
         "AgenticTimeline",
         str(out),
         "--props",
         str(props),
+        *accel,
+    ]
+    print(f"$ cd {kit} && {' '.join(cmd)}")
+    subprocess.run(cmd, cwd=str(kit), env=env, check=True)
+    return out
+
+
+def render_draft(
+    episode: Path,
+    *,
+    limit_sec: float = 120.0,
+    output: Path | None = None,
+    jpeg_quality: int = 70,
+    verbose: bool = True,
+    nvenc: bool = False,
+    gl: str | None = None,
+) -> Path:
+    """Render the first ``limit_sec`` seconds using a fromSec-safe draft slice."""
+    props = prepare_draft(episode, limit_sec=limit_sec, verbose=verbose)
+    kit = remotion_kit_dir()
+    tag = int(limit_sec) if float(limit_sec).is_integer() else limit_sec
+    out = output or (episode / "edit" / "drafts" / f"draft-open-{tag}s.mp4")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fps = int(
+        json.loads(props.read_text(encoding="utf-8"))
+        .get("timeline", {})
+        .get("fps", 30)
+    )
+    last_frame = max(0, int(round(limit_sec * fps)) - 1)
+    env = os.environ.copy()
+    env["AE_TIMELINE_PROPS"] = str(props)
+    env["AE_EPISODE"] = str(episode.resolve())
+    accel = remotion_render_accel_args(nvenc=nvenc, gl=gl, verbose=verbose)
+    cmd = [
+        *_remotion_cli(kit),
+        "render",
+        "src/index.ts",
+        "AgenticTimeline",
+        str(out),
+        "--props",
+        str(props),
+        f"--frames=0-{last_frame}",
+        f"--jpeg-quality={int(jpeg_quality)}",
+        *accel,
     ]
     print(f"$ cd {kit} && {' '.join(cmd)}")
     subprocess.run(cmd, cwd=str(kit), env=env, check=True)
@@ -206,4 +569,8 @@ def render_compose(episode: Path, *, output: Path | None = None) -> Path:
 
 
 def npx_available() -> bool:
-    return shutil.which("pnpm") is not None or shutil.which("npx") is not None
+    try:
+        _pnpm_cmd()
+        return True
+    except FileNotFoundError:
+        return shutil.which("npx") is not None

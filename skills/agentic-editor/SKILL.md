@@ -36,6 +36,22 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
 8. Remotion Studio: **only** via `ae compose . --studio` (stages `public/ae-media` + `--props`).
    Never start `remotion studio` bare — that shows a black empty timeline. Absolute `/Users/...`
    media paths will not load in the browser.
+9. **Audio always from cam.** Screen is visual-only (muted). Prefer `screen_with_cam` for UI demos.
+10. **Locked look (`style: tutorial`):** A-roll MG = **Bold** type + accent `#7dd3fc` (cool mist sky).
+    Screen stage = cool-mist canvas. No full/karaoke captions. Do not invent episode-local
+    colors/fonts — change `styles/tutorial/style.md` (+ `style_load.py` / remotion-kit theme) instead.
+11. **MG overlays:** after EDL (and preferably cover) is confirmed, run `ae overlay-suggest .`,
+    propose the plan, **wait for confirm**, then write `cover.json` `overlays[]` **and** any
+    companion `framing` events (or `ae overlay-suggest . --apply` only after confirm).
+    Never invent timings mid-word. **Default:** overlay plan is gated by cover mode +
+    camera_play — chapter/diagram prefer `screen_with_cam` (wide/hold); on full-cam they
+    emit medium/wide framing companions so MG does not fight close zooms (`faceClear` /
+    left_third). Emphasis may sit on close. Structure (chip/chapter/diagram + section
+    quotas) is reserved first; emphasis is best-fit from an ID payoff lexicon scored by
+    screen-enter + punch proximity (punchy cam without nearby MG gets seeded emphasis).
+    Gaps ~50s chapter / ~10s emphasis; density ~1 sting / 32s keep; same-label min gap ~45s
+    (keeps “Roadmap” etc. from spam). Quiet keep stretches >55s get gap-fill. Emphasis
+    `bottomCqh` default **28** (was too low vs PIP).
 
 ## Process
 
@@ -44,7 +60,15 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
 3. **Propose** radio-edit strategy (4–8 sentences) → **wait for confirm**
 4. **Write** `edit/edl.json` (`sources` + `ranges[]` with `source`/`start`/`end`)
 5. **Cut** — `ae cut .` → `edit/preview.mp4`
-6. **Cover** (if screen) — write `edit/cover.json` → `ae cover .`
+6. **Cover** (if `sources.screen` exists):
+   - Run `ae cover-suggest .` → review `edit/cover.suggest.json`
+   - Propose full-cam vs `screen_with_cam` ranges (formula below) → **wait for confirm**
+   - Write `edit/cover.json` → `ae cover .`
+6b. **Overlays (A-roll MG)** — chapter / emphasis / diagram / chip:
+   - Run `ae overlay-suggest .` → `edit/overlays.suggest.json` (includes `framing_events`)
+    - Propose dense Bold-mist plan synced to cover + zoom/punch → **wait for confirm**
+   - Write `cover.json` `overlays[]` + merge companion `framing` into `events[]`
+     (source-time, word-snapped) → `ae cover .` / `ae compose .`
 7. **Compose** — `ae compose . --studio` or render
 8. **QA** — `ae qa .` inspect `edit/verify/` cut frames
 9. **Iterate** — natural language; never re-transcribe casually
@@ -77,13 +101,69 @@ Paths in EDL are relative to `edit/`.
   "events": [
     { "type": "framing", "start": 10.0, "end": 18.0, "framing": "close", "motion": "ease" },
     { "type": "punch_in", "start": 35.5, "end": 41.0, "scale": 1.12 },
-    { "type": "screen", "source": "screen", "start": 14.0, "end": 20.0 }
+    { "type": "screen_with_cam", "start": 14.0, "end": 42.0, "note": "demo UI" }
   ],
   "captions": []
 }
 ```
 
-Framing presets simulate a 2–3 camera setup from one cam. Propose a camera-play plan from the transcript before writing `cover.json`.
+### Overlay shape (`cover.json` → remapped in `timeline.overlays`)
+
+```json
+{
+  "overlays": [
+    {
+      "kind": "chapter",
+      "start": 12.0,
+      "end": 15.5,
+      "kicker": "Chapter 01",
+      "text": "Extend kontak dengan Studio"
+    },
+    { "kind": "emphasis", "start": 40.0, "end": 41.4, "text": "Studio API" },
+    {
+      "kind": "diagram",
+      "start": 88.0,
+      "end": 94.0,
+      "kicker": "Flow",
+      "title": "Toko Material",
+      "steps": ["res.partner fields", "Seed kategori", "Gambar produk", "Kartu stok"]
+    },
+    { "kind": "chip", "start": 0.0, "end": 2.8, "text": "Odoo Studio" }
+  ]
+}
+```
+
+Times are **cam source seconds**. `ae cover` / compose remaps through the EDL onto output `fromSec`.
+
+**Overlay ↔ camera_play (framework default in `ae overlay-suggest`):**
+
+| Kind | Prefer cover | Framing on full-cam |
+|------|----------------|---------------------|
+| `chapter` / `diagram` | `screen_with_cam` (wide/hold already) | companion `framing` **medium** / **wide** |
+| `chip` | either | companion **medium** |
+| `emphasis` | either | close OK — no companion |
+
+Safe zones stay `left_third` + `faceClear`. Suggest also scales density with keep length (~1 sting / 90s) and writes companion events as `framing_events` (merged into `cover.events` on `--apply`).
+
+### Full cam vs screen + soft-float PIP
+
+| Mode | Visual | Audio |
+|------|--------|-------|
+| Full me (default) | Cam + `camera_play` framing | Cam |
+| `screen_with_cam` | Cool-mist canvas + cozy floated screen (smart window crop) + cam PIP at stage lower-right | Cam only |
+
+**Formula** (also implemented by `ae cover-suggest`):
+
+- Signal A: transcript deixis (`prefer_screen_when` — lihat, klik, UI, …)
+- Signal B: screen frame-diff activity ≥ threshold
+- Use PIP only when both make sense (deixis **or** sustained activity, **and** activity in window), hold ≥ 2.5s
+- Do not invent screen ranges with neither signal
+
+Framing presets simulate a 2–3 camera setup from one cam. Propose a camera-play plan from the transcript before writing `cover.json`. On screen ranges, skip framing zooms.
+
+**Screen explainer (locked in `styles/tutorial`):** cozy + cool mist + `smart_window_detect`. Do not hardcode crop % per episode — `ae compose` attaches `windowCrop` from pixel detection. PIP anchors to the **frame** lower-right.
+
+**Screen explainer (locked in `styles/tutorial`):** cozy + cool mist + `smart_window_detect`. Do not hardcode crop % per episode — `ae compose` attaches `windowCrop` from pixel detection. PIP anchors to the **frame** lower-right.
 
 ## Promote
 

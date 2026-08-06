@@ -1,0 +1,326 @@
+import React from "react";
+import {
+  AbsoluteFill,
+  Sequence,
+  interpolate,
+  spring,
+  useCurrentFrame,
+  useVideoConfig,
+} from "remotion";
+import {
+  DEFAULT_OVERLAY_STYLE,
+  type OverlayStyle,
+  type TimelineOverlay,
+} from "../types";
+
+const DISPLAY =
+  'Syne, "Segoe UI", "Helvetica Neue", Arial, sans-serif';
+const UI = '"Instrument Sans", "Segoe UI", system-ui, sans-serif';
+
+function useStyle(style?: OverlayStyle) {
+  return {
+    ...DEFAULT_OVERLAY_STYLE,
+    ...style,
+    fonts: { ...DEFAULT_OVERLAY_STYLE.fonts, ...style?.fonts },
+    chapter: { ...DEFAULT_OVERLAY_STYLE.chapter, ...style?.chapter },
+    emphasis: { ...DEFAULT_OVERLAY_STYLE.emphasis, ...style?.emphasis },
+    diagram: { ...DEFAULT_OVERLAY_STYLE.diagram, ...style?.diagram },
+    chip: { ...DEFAULT_OVERLAY_STYLE.chip, ...style?.chip },
+  };
+}
+
+function EnterExit({
+  children,
+  durationSec,
+}: {
+  children: React.ReactNode;
+  durationSec: number;
+}) {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const s = spring({ frame, fps, config: { damping: 18, stiffness: 140 } });
+  const y = interpolate(s, [0, 1], [14, 0]);
+  const fadeIn = interpolate(frame, [0, 8], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+  const total = Math.max(1, Math.round(durationSec * fps));
+  // Longer exit so MG does not pop off mid-read (~0.8–1.0s at 30fps)
+  const fadeOutFrames = Math.min(30, Math.max(14, Math.round(total * 0.22)));
+  const fadeOut = interpolate(
+    frame,
+    [Math.max(0, total - fadeOutFrames), total],
+    [1, 0],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    },
+  );
+  const opacity = Math.min(fadeIn, fadeOut);
+  return (
+    <div style={{ opacity, transform: `translateY(${y}px)` }}>{children}</div>
+  );
+}
+
+const Chapter: React.FC<{
+  ov: TimelineOverlay;
+  style: ReturnType<typeof useStyle>;
+  h: number;
+}> = ({ ov, style, h }) => {
+  const left = style.chapter?.leftCqw ?? 4.5;
+  const top = style.chapter?.topCqh ?? 12;
+  const maxW = style.chapter?.maxWidthCqw ?? 42;
+  return (
+  <div
+    style={{
+      position: "absolute",
+      left: `${left}%`,
+      top: `${top}%`,
+      maxWidth: `${maxW}%`,
+      color: style.ink,
+      textShadow: "0 8px 28px rgba(0,0,0,0.55)",
+    }}
+  >
+    <EnterExit durationSec={ov.durationSec}>
+      {ov.kicker ? (
+        <div
+          style={{
+            fontFamily: UI,
+            fontSize: Math.round(h * 0.024),
+            fontWeight: 600,
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            color: style.accent,
+            marginBottom: Math.round(h * 0.012),
+          }}
+        >
+          {ov.kicker}
+        </div>
+      ) : null}
+      <div
+        style={{
+          fontFamily: DISPLAY,
+          fontWeight: 800,
+          fontSize: Math.round(h * 0.09),
+          lineHeight: 0.98,
+          letterSpacing: "-0.03em",
+        }}
+      >
+        {ov.text || ov.title}
+      </div>
+    </EnterExit>
+  </div>
+  );
+};
+
+const Emphasis: React.FC<{
+  ov: TimelineOverlay;
+  style: ReturnType<typeof useStyle>;
+  h: number;
+  w: number;
+}> = ({ ov, style, h, w }) => {
+  const frame = useCurrentFrame();
+  const line = interpolate(frame, [6, 18], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+  const parts = (ov.text || "").split(/\s+/).filter(Boolean);
+  const head = parts.slice(0, -1).join(" ");
+  const tail = parts.slice(-1)[0] || ov.text || "";
+  const left = style.emphasis?.leftCqw ?? 4.5;
+  const bottom = style.emphasis?.bottomCqh ?? 28;
+  const sizeCqh = style.emphasis?.sizeCqh ?? 16;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: `${left}%`,
+        bottom: `${bottom}%`,
+        maxWidth: "55%",
+        color: style.ink,
+        textShadow: "0 8px 28px rgba(0,0,0,0.55)",
+      }}
+    >
+      <EnterExit durationSec={ov.durationSec}>
+        <div
+          style={{
+            fontFamily: DISPLAY,
+            fontWeight: 800,
+            fontSize: Math.round(h * (sizeCqh / 100)),
+            lineHeight: 0.92,
+            letterSpacing: "-0.04em",
+          }}
+        >
+          {head ? (
+            <>
+              {head}{" "}
+              <span style={{ color: style.accent }}>{tail}</span>
+            </>
+          ) : (
+            <span style={{ color: style.accent }}>{tail}</span>
+          )}
+        </div>
+        <div
+          style={{
+            marginTop: Math.round(h * 0.02),
+            width: Math.round(w * 0.22),
+            height: 3,
+            background: style.accent,
+            transform: `scaleX(${line})`,
+            transformOrigin: "left center",
+          }}
+        />
+      </EnterExit>
+    </div>
+  );
+};
+
+const Diagram: React.FC<{
+  ov: TimelineOverlay;
+  style: ReturnType<typeof useStyle>;
+  h: number;
+}> = ({ ov, style, h }) => {
+  const steps = ov.steps || [];
+  const left = style.diagram?.leftCqw ?? 4.5;
+  const top = style.diagram?.topCqh ?? 10;
+  const maxW = style.diagram?.maxWidthCqw ?? 40;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: `${left}%`,
+        top: `${top}%`,
+        maxWidth: `${maxW}%`,
+        color: style.ink,
+        textShadow: "0 8px 24px rgba(0,0,0,0.5)",
+      }}
+    >
+      <EnterExit durationSec={ov.durationSec}>
+        <div
+          style={{
+            fontFamily: UI,
+            fontSize: Math.round(h * 0.024),
+            fontWeight: 600,
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            color: style.dim,
+            marginBottom: Math.round(h * 0.01),
+          }}
+        >
+          {ov.kicker || "Flow"}
+        </div>
+        <div
+          style={{
+            fontFamily: DISPLAY,
+            fontWeight: 800,
+            fontSize: Math.round(h * 0.055),
+            letterSpacing: "-0.02em",
+            marginBottom: Math.round(h * 0.022),
+          }}
+        >
+          {ov.title || ov.text}
+        </div>
+        <div style={{ display: "grid", gap: Math.round(h * 0.012) }}>
+          {steps.map((step, i) => (
+            <div
+              key={`${i}-${step}`}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "auto 1fr",
+                gap: 14,
+                alignItems: "center",
+                fontFamily: UI,
+                fontWeight: 700,
+                fontSize: Math.round(h * 0.036),
+              }}
+            >
+              <span style={{ color: style.accent }}>{i + 1}</span>
+              <span>{step}</span>
+            </div>
+          ))}
+        </div>
+      </EnterExit>
+    </div>
+  );
+};
+
+const Chip: React.FC<{
+  ov: TimelineOverlay;
+  style: ReturnType<typeof useStyle>;
+  h: number;
+}> = ({ ov, style, h }) => {
+  const left = style.chip?.leftCqw ?? 4.5;
+  const top = style.chip?.topCqh ?? 10;
+  const sizeCqh = style.chip?.sizeCqh ?? 3.4;
+  return (
+  <div
+    style={{
+      position: "absolute",
+      left: `${left}%`,
+      top: `${top}%`,
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 10,
+      color: style.ink,
+      fontFamily: UI,
+      fontWeight: 600,
+      fontSize: Math.round(h * (sizeCqh / 100)),
+      textShadow: "0 6px 18px rgba(0,0,0,0.5)",
+    }}
+  >
+    <EnterExit durationSec={ov.durationSec}>
+      <span
+        style={{
+          width: Math.round(h * 0.016),
+          height: Math.round(h * 0.016),
+          borderRadius: "50%",
+          background: style.accent,
+          display: "inline-block",
+        }}
+      />
+      {ov.text}
+    </EnterExit>
+  </div>
+  );
+};
+
+const OneOverlay: React.FC<{
+  ov: TimelineOverlay;
+  styleTokens?: OverlayStyle;
+}> = ({ ov, styleTokens }) => {
+  const { height, width } = useVideoConfig();
+  const style = useStyle(styleTokens);
+  if (ov.kind === "chapter") return <Chapter ov={ov} style={style} h={height} />;
+  if (ov.kind === "emphasis")
+    return <Emphasis ov={ov} style={style} h={height} w={width} />;
+  if (ov.kind === "diagram") return <Diagram ov={ov} style={style} h={height} />;
+  if (ov.kind === "chip") return <Chip ov={ov} style={style} h={height} />;
+  return null;
+};
+
+export const OverlayLayer: React.FC<{
+  overlays: TimelineOverlay[];
+  styleTokens?: OverlayStyle;
+}> = ({ overlays, styleTokens }) => {
+  const { fps } = useVideoConfig();
+  if (!overlays?.length) return null;
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none" }}>
+      {overlays.map((ov) => {
+        const from = Math.round(ov.fromSec * fps);
+        const duration = Math.max(1, Math.round(ov.durationSec * fps));
+        return (
+          <Sequence key={ov.id} from={from} durationInFrames={duration} name={ov.id}>
+            <AbsoluteFill
+              style={{
+                background:
+                  "linear-gradient(90deg, rgba(0,0,0,0.42) 0%, rgba(0,0,0,0.1) 32%, transparent 50%)",
+              }}
+            />
+            <OneOverlay ov={ov} styleTokens={styleTokens} />
+          </Sequence>
+        );
+      })}
+    </AbsoluteFill>
+  );
+};

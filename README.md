@@ -74,6 +74,7 @@ Default ASR language is **Indonesian** (`asr.language: id`); override per episod
 | `ae ingest .` | Probe + ASR + `takes_packed.md` |
 | `ae cut .` | EDL → `edit/preview.mp4` |
 | `ae cover .` | EDL + cover → `timeline.json` |
+| `ae mezzanine .` | Deliverable proxies → `edit/mezzanine/` (raw untouched) |
 | `ae compose . [--studio]` | Remotion preview / render |
 | `ae qa .` | Cut-boundary frames in `edit/verify/` |
 | `ae promote-check .` | Show `edit/promotions.md` |
@@ -101,5 +102,6 @@ models/                # ggml *.bin (gitignored — download locally)
 2. Never cut mid-word; snap to transcript word boundaries; pad 30–200ms.
 3. `ae cut` applies 30ms audio fades — do not skip.
 4. Cache transcripts — never re-ASR unless source changed (`ae ingest --force`).
-5. All outputs in `edit/`. Raw footage is read-only.
+5. All outputs in `edit/`. Raw footage is read-only (compose **copies** into public — never hardlinks).
 6. Promote reusable changes into this repo, not episode copies.
+7. Heavy raw (e.g. 1440p60 multi‑GB): `ae mezzanine .` before compose — CRF16 deliverable proxies, no quality loss for YouTube 1080p.

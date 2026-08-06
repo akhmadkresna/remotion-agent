@@ -1,10 +1,12 @@
-"""Suggest radio-edit EDL from transcript silence gaps.
+"""Suggest radio-edit EDL from transcript silence gaps + wait/repeat cuts.
 
-Cuts gaps ≥ ``gap_cut_sec``; long intentional pauses (≥ ``hold_if_gap_sec``)
-are collapsed to ``hold_sec`` instead of removed entirely (AI wait / think time).
+Aggressive tutorial defaults:
+  - Cut silences ≥ ``gap_cut_sec`` (0.35s)
+  - AI / screen waits ≥ ``hold_if_gap_sec`` collapse to a short beat (``hold_sec`` ~0.7s)
+  - Drop / clamp wait-filler speech ("tunggu", "sebentar", …)
+  - Cut near-duplicate repeated phrases
 
-Always writes ``edit/edl.suggest.json`` — agent must confirm before ``--apply``
-or ``ae cut``.
+Always writes ``edit/edl.suggest.json`` — confirm before ``--apply`` / ``ae cut``.
 """
 
 from __future__ import annotations
@@ -18,18 +20,63 @@ import yaml
 
 from agentic_editor.cover.suggest import load_cam_words
 from agentic_editor.editor.edl import snap_range_to_words
+from agentic_editor.editor.pack import group_into_phrases
 from agentic_editor.paths import framework_home
 from agentic_editor.project import load_project
 
 DEFAULT_RADIO_CFG: dict[str, Any] = {
-    "silence_gap_sec": 0.5,  # pack phrases
-    "gap_cut_sec": 0.5,  # cut silences ≥ this
-    "hold_if_gap_sec": 5.0,  # longer gaps → keep a short hold
-    "hold_sec": 1.5,
-    "min_keep_sec": 0.4,
-    "pad_before_sec": 0.05,
-    "pad_after_sec": 0.08,
+    "silence_gap_sec": 0.35,  # pack phrases tighter
+    "gap_cut_sec": 0.35,  # cut silences ≥ this
+    "hold_if_gap_sec": 3.5,  # longer gaps (AI/screen wait) → short beat only
+    "hold_sec": 0.7,  # do NOT show full wait / prompt spinner time
+    "min_keep_sec": 0.35,
+    "pad_before_sec": 0.04,
+    "pad_after_sec": 0.06,
+    "cut_repeats": True,
+    "repeat_similarity": 0.82,
+    "repeat_window_sec": 45.0,
+    "cut_wait_speech": True,
+    "wait_speech_max_sec": 0.7,
 }
+
+WAIT_SPEECH_RE = re.compile(
+    r"\b("
+    r"tunggu|sebentar|loading|please\s+wait|wait|masih\s+proses|proses|"
+    r"bentar|dulu\s+ya|satu\s+detik|moment|mo\s+men"
+    r")\b",
+    re.I,
+)
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+", re.I)
+_FILLER = frozenset(
+    {
+        "ya",
+        "yah",
+        "oke",
+        "ok",
+        "nah",
+        "dan",
+        "atau",
+        "yang",
+        "di",
+        "ke",
+        "dari",
+        "juga",
+        "sih",
+        "dong",
+        "lah",
+        "nih",
+        "ini",
+        "itu",
+        "the",
+        "a",
+        "an",
+        "of",
+        "to",
+        "for",
+        "guys",
+    }
+)
 
 
 def load_style_radio_config(style_name: str = "tutorial") -> dict[str, Any]:
@@ -53,29 +100,70 @@ def load_style_radio_config(style_name: str = "tutorial") -> dict[str, Any]:
     return cfg
 
 
-def _speech_intervals(words: list[dict[str, Any]]) -> list[tuple[float, float]]:
-    """Merge contiguous word spans (ignore tiny gaps < 50ms)."""
-    tokens = []
-    for w in words:
-        try:
-            s = float(w["start"])
-            e = float(w["end"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if e <= s:
-            continue
-        tokens.append((s, e))
-    if not tokens:
-        return []
-    tokens.sort()
-    merged: list[tuple[float, float]] = [tokens[0]]
-    for s, e in tokens[1:]:
-        ps, pe = merged[-1]
-        if s <= pe + 0.05:
-            merged[-1] = (ps, max(pe, e))
-        else:
-            merged.append((s, e))
-    return merged
+def normalize_phrase(text: str) -> str:
+    tokens = [
+        t.lower()
+        for t in _TOKEN_RE.findall(text or "")
+        if t.lower() not in _FILLER and len(t) > 1
+    ]
+    return " ".join(tokens)
+
+
+def phrase_similarity(a: str, b: str) -> float:
+    """Jaccard similarity on normalized token sets."""
+    ta = set(normalize_phrase(a).split())
+    tb = set(normalize_phrase(b).split())
+    if not ta or not tb:
+        return 1.0 if normalize_phrase(a) == normalize_phrase(b) and normalize_phrase(a) else 0.0
+    return len(ta & tb) / max(1, len(ta | tb))
+
+
+def is_wait_speech(text: str) -> bool:
+    return bool(WAIT_SPEECH_RE.search(text or ""))
+
+
+def _filter_phrases(
+    phrases: list[dict[str, Any]],
+    *,
+    cut_repeats: bool,
+    repeat_similarity: float,
+    repeat_window_sec: float,
+    cut_wait_speech: bool,
+    wait_speech_max_sec: float,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Drop repeats / clamp wait-filler phrases. Returns (kept, stats)."""
+    kept: list[dict[str, Any]] = []
+    stats = {"dropped_repeat": 0, "clamped_wait": 0, "dropped_wait": 0}
+    for p in phrases:
+        text = str(p.get("text") or "")
+        start = float(p["start"])
+        end = float(p["end"])
+        dur = end - start
+
+        if cut_wait_speech and is_wait_speech(text):
+            # Pure wait prompts: keep at most a beat, or drop if tiny
+            if dur <= wait_speech_max_sec * 0.5:
+                stats["dropped_wait"] += 1
+                continue
+            end = start + wait_speech_max_sec
+            p = {**p, "end": end, "note": "wait-clamp"}
+            stats["clamped_wait"] += 1
+            dur = wait_speech_max_sec
+
+        if cut_repeats and kept:
+            for prev in reversed(kept):
+                if start - float(prev["end"]) > repeat_window_sec:
+                    break
+                sim = phrase_similarity(text, str(prev.get("text") or ""))
+                if sim >= repeat_similarity:
+                    stats["dropped_repeat"] += 1
+                    p = None
+                    break
+            if p is None:
+                continue
+
+        kept.append(p)
+    return kept, stats
 
 
 def suggest_edl_from_words(
@@ -83,72 +171,123 @@ def suggest_edl_from_words(
     *,
     source: str = "cam",
     sources: dict[str, str] | None = None,
-    gap_cut_sec: float = 0.5,
-    hold_if_gap_sec: float = 5.0,
-    hold_sec: float = 1.5,
-    min_keep_sec: float = 0.4,
-    pad_before_sec: float = 0.05,
-    pad_after_sec: float = 0.08,
+    gap_cut_sec: float = 0.35,
+    hold_if_gap_sec: float = 3.5,
+    hold_sec: float = 0.7,
+    min_keep_sec: float = 0.35,
+    pad_before_sec: float = 0.04,
+    pad_after_sec: float = 0.06,
     source_start: float | None = None,
     source_end: float | None = None,
     snap: bool = True,
+    silence_gap_sec: float | None = None,
+    cut_repeats: bool = True,
+    repeat_similarity: float = 0.82,
+    repeat_window_sec: float = 45.0,
+    cut_wait_speech: bool = True,
+    wait_speech_max_sec: float = 0.7,
 ) -> dict[str, Any]:
     """
-    Build keep ranges from speech, cutting silence gaps.
+    Build keep ranges from speech phrases.
 
     - Gaps in ``[gap_cut_sec, hold_if_gap_sec)`` → hard cut
-    - Gaps ≥ ``hold_if_gap_sec`` → insert ``hold_sec`` of source (AI wait)
+    - Gaps ≥ ``hold_if_gap_sec`` → keep only ``hold_sec`` beat (not full wait UI)
+    - Near-duplicate phrases → dropped
+    - Wait-filler speech → clamped / dropped
     """
-    intervals = _speech_intervals(words)
+    phrase_gap = float(silence_gap_sec if silence_gap_sec is not None else gap_cut_sec)
+    # pack expects full word dicts
+    pack_words: list[dict[str, Any]] = []
+    for w in words:
+        try:
+            s = float(w["start"])
+            e = float(w["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        pack_words.append(
+            {
+                "type": "word",
+                "text": w.get("text") or w.get("word") or "",
+                "word": w.get("text") or w.get("word") or "",
+                "start": s,
+                "end": e,
+            }
+        )
+
+    phrases = group_into_phrases(pack_words, silence_threshold=phrase_gap)
     if source_start is not None or source_end is not None:
         s0 = float(source_start if source_start is not None else 0.0)
         s1 = float(source_end) if source_end is not None else float("inf")
-        intervals = [(max(a, s0), min(b, s1)) for a, b in intervals if min(b, s1) - max(a, s0) > 0.05]
+        phrases = [
+            {**p, "start": max(float(p["start"]), s0), "end": min(float(p["end"]), s1)}
+            for p in phrases
+            if min(float(p["end"]), s1) - max(float(p["start"]), s0) > 0.05
+        ]
 
-    ranges: list[dict[str, Any]] = []
-    if not intervals:
+    phrases, filter_stats = _filter_phrases(
+        phrases,
+        cut_repeats=cut_repeats,
+        repeat_similarity=repeat_similarity,
+        repeat_window_sec=repeat_window_sec,
+        cut_wait_speech=cut_wait_speech,
+        wait_speech_max_sec=wait_speech_max_sec,
+    )
+
+    if not phrases:
         return {
             "sources": sources or {source: f"../raw/{source}.mp4"},
             "ranges": [],
-            "_meta": {"keep_sec": 0.0, "strategy": "silence-cut", "empty": True},
+            "_meta": {
+                "keep_sec": 0.0,
+                "strategy": "silence-cut+repeat+wait",
+                "empty": True,
+                **filter_stats,
+            },
         }
 
-    # Walk speech intervals; cut or hold gaps between them
-    cur_start, cur_end = intervals[0]
-    for nxt_start, nxt_end in intervals[1:]:
+    ranges: list[dict[str, Any]] = []
+    cur_start = float(phrases[0]["start"])
+    cur_end = float(phrases[0]["end"])
+    cur_note = str(phrases[0].get("note") or "speech")
+
+    for p in phrases[1:]:
+        nxt_start = float(p["start"])
+        nxt_end = float(p["end"])
         gap = nxt_start - cur_end
         if gap < gap_cut_sec:
-            # tiny gap — glue
             cur_end = max(cur_end, nxt_end)
             continue
         if gap >= hold_if_gap_sec:
-            # keep speech, then a short hold into the wait, then next speech
+            # Short beat only — do not show full wait/prompt
             hold_end = min(nxt_start, cur_end + hold_sec)
             if hold_end > cur_end + 0.05:
                 cur_end = hold_end
+                cur_note = "speech+wait-beat"
             ranges.append(
                 {
                     "source": source,
                     "start": cur_start,
                     "end": cur_end,
-                    "note": "speech+hold",
+                    "note": cur_note,
                 }
             )
             cur_start, cur_end = nxt_start, nxt_end
+            cur_note = str(p.get("note") or "speech")
             continue
-        # medium silence — hard cut
         ranges.append(
             {
                 "source": source,
                 "start": cur_start,
                 "end": cur_end,
-                "note": "speech",
+                "note": cur_note,
             }
         )
         cur_start, cur_end = nxt_start, nxt_end
-    ranges.append({"source": source, "start": cur_start, "end": cur_end, "note": "speech"})
+        cur_note = str(p.get("note") or "speech")
+    ranges.append(
+        {"source": source, "start": cur_start, "end": cur_end, "note": cur_note}
+    )
 
-    # Snap + min keep
     word_dicts = [
         {
             "type": "word",
@@ -180,7 +319,7 @@ def suggest_edl_from_words(
         "ranges": cleaned,
         "grade": None,
         "_meta": {
-            "strategy": "silence-cut",
+            "strategy": "silence-cut+repeat+wait",
             "gap_cut_sec": gap_cut_sec,
             "hold_if_gap_sec": hold_if_gap_sec,
             "hold_sec": hold_sec,
@@ -189,6 +328,9 @@ def suggest_edl_from_words(
             "source_end": source_end,
             "keep_sec": round(keep, 3),
             "range_count": len(cleaned),
+            "cut_repeats": cut_repeats,
+            "cut_wait_speech": cut_wait_speech,
+            **filter_stats,
         },
     }
 
@@ -219,14 +361,12 @@ def suggest_edl(
     edit = episode / "edit"
     words = load_cam_words(edit)
     sources_cfg = cfg.get("sources") or {}
-    # EDL paths are relative to edit/
     edl_sources: dict[str, str] = {}
     for name, rel in sources_cfg.items():
         p = Path(str(rel))
         if p.is_absolute():
             edl_sources[name] = str(p)
         else:
-            # project paths are episode-relative; EDL expects edit-relative
             edl_sources[name] = str(Path("..") / p).replace("\\", "/")
 
     source = "cam" if "cam" in edl_sources else next(iter(edl_sources), "cam")
@@ -242,6 +382,12 @@ def suggest_edl(
         pad_after_sec=float(radio["pad_after_sec"]),
         source_start=source_start,
         source_end=source_end,
+        silence_gap_sec=float(radio.get("silence_gap_sec", radio["gap_cut_sec"])),
+        cut_repeats=bool(radio.get("cut_repeats", True)),
+        repeat_similarity=float(radio.get("repeat_similarity", 0.82)),
+        repeat_window_sec=float(radio.get("repeat_window_sec", 45.0)),
+        cut_wait_speech=bool(radio.get("cut_wait_speech", True)),
+        wait_speech_max_sec=float(radio.get("wait_speech_max_sec", radio["hold_sec"])),
     )
     meta = suggestion.setdefault("_meta", {})
     meta["style"] = style
@@ -253,6 +399,9 @@ def suggest_edl(
             "hold_sec",
             "min_keep_sec",
             "silence_gap_sec",
+            "cut_repeats",
+            "cut_wait_speech",
+            "wait_speech_max_sec",
         )
         if k in radio
     }

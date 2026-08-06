@@ -25,15 +25,34 @@ function useStyle(style?: OverlayStyle) {
   };
 }
 
-function Enter({ children }: { children: React.ReactNode }) {
+function EnterExit({
+  children,
+  durationSec,
+}: {
+  children: React.ReactNode;
+  durationSec: number;
+}) {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const s = spring({ frame, fps, config: { damping: 18, stiffness: 140 } });
   const y = interpolate(s, [0, 1], [14, 0]);
-  const opacity = interpolate(frame, [0, 8], [0, 1], {
+  const fadeIn = interpolate(frame, [0, 8], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
+  const total = Math.max(1, Math.round(durationSec * fps));
+  // Longer exit so MG does not pop off mid-read (~0.8–1.0s at 30fps)
+  const fadeOutFrames = Math.min(30, Math.max(14, Math.round(total * 0.22)));
+  const fadeOut = interpolate(
+    frame,
+    [Math.max(0, total - fadeOutFrames), total],
+    [1, 0],
+    {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    },
+  );
+  const opacity = Math.min(fadeIn, fadeOut);
   return (
     <div style={{ opacity, transform: `translateY(${y}px)` }}>{children}</div>
   );
@@ -54,7 +73,7 @@ const Chapter: React.FC<{
       textShadow: "0 8px 28px rgba(0,0,0,0.55)",
     }}
   >
-    <Enter>
+    <EnterExit durationSec={ov.durationSec}>
       {ov.kicker ? (
         <div
           style={{
@@ -81,7 +100,7 @@ const Chapter: React.FC<{
       >
         {ov.text || ov.title}
       </div>
-    </Enter>
+    </EnterExit>
   </div>
 );
 
@@ -110,7 +129,7 @@ const Emphasis: React.FC<{
         textShadow: "0 8px 28px rgba(0,0,0,0.55)",
       }}
     >
-      <Enter>
+      <EnterExit durationSec={ov.durationSec}>
         <div
           style={{
             fontFamily: DISPLAY,
@@ -139,7 +158,7 @@ const Emphasis: React.FC<{
             transformOrigin: "left center",
           }}
         />
-      </Enter>
+      </EnterExit>
     </div>
   );
 };
@@ -161,7 +180,7 @@ const Diagram: React.FC<{
         textShadow: "0 8px 24px rgba(0,0,0,0.5)",
       }}
     >
-      <Enter>
+      <EnterExit durationSec={ov.durationSec}>
         <div
           style={{
             fontFamily: UI,
@@ -205,7 +224,7 @@ const Diagram: React.FC<{
             </div>
           ))}
         </div>
-      </Enter>
+      </EnterExit>
     </div>
   );
 };
@@ -230,7 +249,7 @@ const Chip: React.FC<{
       textShadow: "0 6px 18px rgba(0,0,0,0.5)",
     }}
   >
-    <Enter>
+    <EnterExit durationSec={ov.durationSec}>
       <span
         style={{
           width: Math.round(h * 0.016),
@@ -241,7 +260,7 @@ const Chip: React.FC<{
         }}
       />
       {ov.text}
-    </Enter>
+    </EnterExit>
   </div>
 );
 

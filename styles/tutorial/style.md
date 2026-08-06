@@ -15,6 +15,12 @@ overlays:
   accentName: cool_mist_sky
   ink: "#ffffff"
   dim: "rgba(255,255,255,0.55)"
+  dwell:
+    chip_sec: 4.0
+    chapter_sec: 5.0
+    diagram_sec: 7.5
+    emphasis_sec: 2.4
+    min_sec: 1.8
   fonts:
     display: Syne
     ui: Instrument Sans
@@ -46,7 +52,7 @@ overlays:
   # - chip: prefer medium framing on full cam
   # - emphasis: close OK; ID payoff lexicon + screen-enter score (best-fit)
   # - structure reserved first; section quota on long screen windows
-  # - gaps: ~90s chapters, ~25s emphasis; densify ~1 sting / 70s keep
+  # - dwell long enough to read; Remotion fades out (not hard cut)
 punch_in:
   scale: 1.28
   defaultDurationSec: 1.35
@@ -61,15 +67,20 @@ camera_play:
     wide: 1.0
     medium: 1.22
     close: 1.42
-# Silence-cut radio-edit (ae edl-suggest). Tighter than classic CapCut pack.
+# Silence-cut radio-edit (ae edl-suggest). Aggressive: short waits, cut repeats.
 radio_edit:
-  silence_gap_sec: 0.5
-  gap_cut_sec: 0.5
-  hold_if_gap_sec: 5.0
-  hold_sec: 1.5
-  min_keep_sec: 0.4
-  pad_before_sec: 0.05
-  pad_after_sec: 0.08
+  silence_gap_sec: 0.35
+  gap_cut_sec: 0.35
+  hold_if_gap_sec: 3.5      # AI/screen wait → keep only a beat
+  hold_sec: 0.7             # do NOT show full wait/prompt spinner
+  min_keep_sec: 0.35
+  pad_before_sec: 0.04
+  pad_after_sec: 0.06
+  cut_repeats: true
+  repeat_similarity: 0.82
+  repeat_window_sec: 45
+  cut_wait_speech: true     # "tunggu/sebentar/loading" clamped
+  wait_speech_max_sec: 0.7
 cover:
   # Show screen when possible (tutorial default). Use mode: balanced for stricter gates.
   mode: prefer_screen

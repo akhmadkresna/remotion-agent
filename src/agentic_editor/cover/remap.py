@@ -93,13 +93,22 @@ def build_timeline_overlays(
             source=str(ov.get("source") or "cam"),
         )
         for j, sl in enumerate(slices):
-            if sl["durationSec"] < 0.12:
+            if sl["durationSec"] < 0.5:
                 continue
+            kind = str(ov.get("kind") or "")
+            # Readable dwell floor (style overlays.dwell); fade-out in OverlayLayer
+            floor = {
+                "chip": 4.0,
+                "chapter": 5.0,
+                "diagram": 7.5,
+                "emphasis": 2.4,
+            }.get(kind, 1.8)
+            dur = max(float(sl["durationSec"]), floor)
             inst = {
                 "id": f"{ov['id']}-{j}" if len(slices) > 1 else ov["id"],
                 "kind": ov["kind"],
                 "fromSec": sl["fromSec"],
-                "durationSec": sl["durationSec"],
+                "durationSec": dur,
                 "text": ov.get("text") or "",
             }
             if ov.get("kicker"):

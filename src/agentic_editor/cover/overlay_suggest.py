@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from agentic_editor.cover.style_load import load_overlays
 from agentic_editor.cover.suggest import load_cam_words, snap_window_to_words
 from agentic_editor.editor.edl import load_edl
 from agentic_editor.project import load_project
@@ -31,11 +32,12 @@ SCREEN_EVENT_TYPES = frozenset(
     {"screen_with_cam", "cam_pip", "screen", "screen_full"}
 )
 
-# Holds (seconds)
-EMPHASIS_PAD = 0.08
-CHAPTER_HOLD = 3.5
-CHIP_HOLD = 2.8
-DIAGRAM_HOLD = 6.0
+# Holds (seconds) — long enough to read; OverlayLayer also fades out
+EMPHASIS_PAD = 0.12
+EMPHASIS_MIN_HOLD = 2.4
+CHAPTER_HOLD = 5.0
+CHIP_HOLD = 4.0
+DIAGRAM_HOLD = 7.5
 
 # Spacing / density
 SEC_PER_OVERLAY = 70.0  # denser than 90s for long tutorials
@@ -43,6 +45,9 @@ CHAPTER_MIN_GAP = 90.0
 EMPHASIS_MIN_GAP = 25.0
 SECTION_QUOTA_SEC = 120.0  # long screen window → ensure entry MG
 SCREEN_ENTER_BOOST_SEC = 8.0
+
+# Remap drops tiny slices; suggest must never emit below this
+OVERLAY_MIN_SEC = 1.8
 
 FACE_HEAVY_KINDS = frozenset({"chapter", "diagram"})
 CHIP_PREFERS_MEDIUM = True
@@ -302,6 +307,57 @@ def _in_edl(ranges: list[dict[str, Any]], s: float, e: float) -> bool:
     )
 
 
+def get_dwell_holds(style_name: str = "tutorial") -> dict[str, float]:
+    """Resolve per-kind dwell from style pack ``overlays.dwell``."""
+    ov = load_overlays(style_name)
+    dwell = ov.get("dwell") if isinstance(ov.get("dwell"), dict) else {}
+    return {
+        "emphasis": float(dwell.get("emphasis_sec", EMPHASIS_MIN_HOLD)),
+        "chip": float(dwell.get("chip_sec", CHIP_HOLD)),
+        "chapter": float(dwell.get("chapter_sec", CHAPTER_HOLD)),
+        "diagram": float(dwell.get("diagram_sec", DIAGRAM_HOLD)),
+        "min": float(dwell.get("min_sec", OVERLAY_MIN_SEC)),
+    }
+
+
+def ensure_overlay_dwell(
+    start: float,
+    end: float,
+    *,
+    kind: str,
+    edl_ranges: list[dict[str, Any]] | None = None,
+    holds: dict[str, float] | None = None,
+) -> tuple[float, float]:
+    """Force readable on-screen time; overlays used to vanish in ~1s."""
+    h = holds or {
+        "emphasis": EMPHASIS_MIN_HOLD,
+        "chip": CHIP_HOLD,
+        "chapter": CHAPTER_HOLD,
+        "diagram": DIAGRAM_HOLD,
+        "min": OVERLAY_MIN_SEC,
+    }
+    floor = float(h.get("min", OVERLAY_MIN_SEC))
+    min_hold = max(float(h.get(kind, floor)), floor)
+    s, e = float(start), float(end)
+    if e - s < min_hold:
+        e = s + min_hold
+    # Clamp to an overlapping EDL keep range when possible
+    if edl_ranges:
+        for r in edl_ranges:
+            if str(r.get("source") or "cam") != "cam":
+                continue
+            rs, re = float(r["start"]), float(r["end"])
+            if re <= s or rs >= e:
+                continue
+            e = min(e, re)
+            if e - s < floor and re - rs >= floor:
+                e = min(re, s + min_hold)
+            break
+    if e <= s:
+        e = s + floor
+    return s, e
+
+
 def _note_for_window(
     ranges: list[dict[str, Any]], w0: float, w1: float
 ) -> str:
@@ -399,6 +455,12 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
     """
     episode = episode.resolve()
     cfg = load_project(episode)
+    style_name = str(cfg.get("style") or "tutorial")
+    holds = get_dwell_holds(style_name)
+    chip_hold = holds["chip"]
+    chapter_hold = holds["chapter"]
+    diagram_hold = holds["diagram"]
+    emphasis_hold = holds["emphasis"]
     edit = episode / "edit"
     edl_path = edit / "edl.json"
     if not edl_path.is_file():
@@ -424,7 +486,7 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
         "word_count": len(words),
         "range_count": len(ranges),
         "keep_sec": round(keep_sec, 1),
-        "style": str(cfg.get("style") or "tutorial"),
+        "style": style_name,
         "preset": "bold_mist",
         "has_cover": bool(cover),
         "screen_event_windows": len(screen_wins),
@@ -434,6 +496,7 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
             "snap_on_cuts": camera_play.get("snap_on_cuts", True),
         },
         "caps": caps,
+        "dwell": holds,
         "rules": {
             "chapter_diagram": "prefer screen_with_cam; else emit framing medium/wide",
             "chip": "prefer medium framing on full cam",
@@ -444,6 +507,7 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
             "section_quota_sec": SECTION_QUOTA_SEC,
             "safe_zones": ["left_third", "lower_third"],
             "faceClear": True,
+            "dwell_readable": True,
         },
     }
 
@@ -453,7 +517,14 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
     def try_add(ov: dict[str, Any], *, structural: bool) -> bool:
         nonlocal overlays, framing_events, used_spans, chapter_spans, emphasis_spans
         kind = str(ov["kind"])
-        s, e = float(ov["start"]), float(ov["end"])
+        s, e = ensure_overlay_dwell(
+            float(ov["start"]),
+            float(ov["end"]),
+            kind=kind,
+            edl_ranges=ranges,
+            holds=holds,
+        )
+        ov = {**ov, "start": round(s, 3), "end": round(e, 3)}
 
         if structural:
             # Structure may use reserved slots even before emphasis fill
@@ -509,7 +580,7 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
     if ranges and caps["chip"] > 0:
         r0 = ranges[0]
         rs, r_end = float(r0["start"]), float(r0["end"])
-        end = min(r_end, rs + CHIP_HOLD)
+        end = min(r_end, rs + chip_hold)
         if words:
             rs, end = snap_window_to_words(rs, end, words)
         title = short_label(
@@ -542,14 +613,14 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
         if not note or not CHAPTER_NOTE_RE.search(note):
             continue
         rs, r_end = float(r["start"]), float(r["end"])
-        end = min(r_end, rs + CHAPTER_HOLD)
+        end = min(r_end, rs + chapter_hold)
         if words:
             rs, end = snap_window_to_words(rs, end, words)
         if screen_wins and not is_mostly_screen(rs, end, screen_wins):
             for w0, w1 in screen_wins:
-                if overlap_sec(rs, r_end, w0, w1) >= CHAPTER_HOLD * 0.8:
+                if overlap_sec(rs, r_end, w0, w1) >= chapter_hold * 0.8:
                     rs = max(rs, w0)
-                    end = min(w1, rs + CHAPTER_HOLD)
+                    end = min(w1, rs + chapter_hold)
                     if words:
                         rs, end = snap_window_to_words(rs, end, words)
                     break
@@ -572,7 +643,7 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
     for wi, (w0, w1) in enumerate(screen_wins):
         if (w1 - w0) < SECTION_QUOTA_SEC:
             continue
-        head_end = min(w1, w0 + CHAPTER_HOLD)
+        head_end = min(w1, w0 + chapter_hold)
         if overlaps_any(w0, head_end, used_spans):
             continue  # already have MG at enter
         note = _note_for_window(ranges, w0, w1)
@@ -603,7 +674,7 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
                     "id": f"chip-sec-{wi+1:02d}",
                     "kind": "chip",
                     "start": rs,
-                    "end": max(rs + 0.8, min(end, rs + CHIP_HOLD)),
+                    "end": max(rs + 0.8, min(end, rs + chip_hold)),
                     "text": label,
                     "note": f"section quota chip screen@{w0:.0f}",
                 },
@@ -619,19 +690,19 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
         if not note or not DIAGRAM_NOTE_RE.search(note):
             continue
         rs, r_end = float(r["start"]), float(r["end"])
-        end = min(r_end, rs + DIAGRAM_HOLD)
+        end = min(r_end, rs + diagram_hold)
         if words:
             rs, end = snap_window_to_words(rs, end, words)
         for w0, w1 in screen_wins:
-            if overlap_sec(rs, r_end, w0, w1) >= min(DIAGRAM_HOLD, r_end - rs) * 0.5:
+            if overlap_sec(rs, r_end, w0, w1) >= min(diagram_hold, r_end - rs) * 0.5:
                 rs = max(float(r["start"]), w0)
-                end = min(w1, rs + DIAGRAM_HOLD)
+                end = min(w1, rs + diagram_hold)
                 if words:
                     rs, end = snap_window_to_words(rs, end, words)
                 break
-        if overlaps_any(rs, end, used_spans) and (r_end - rs) > DIAGRAM_HOLD + CHAPTER_HOLD:
-            rs = min(r_end - DIAGRAM_HOLD, rs + CHAPTER_HOLD + 0.5)
-            end = min(r_end, rs + DIAGRAM_HOLD)
+        if overlaps_any(rs, end, used_spans) and (r_end - rs) > diagram_hold + chapter_hold:
+            rs = min(r_end - diagram_hold, rs + chapter_hold + 0.5)
+            end = min(r_end, rs + diagram_hold)
             if words:
                 rs, end = snap_window_to_words(rs, end, words)
         # Curated default steps for tutorial material apps
@@ -675,7 +746,7 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
             {
                 "text": hit["text"],
                 "start": s,
-                "end": max(s + 0.6, e),
+                "end": max(s + emphasis_hold, e),
                 "score": sc,
                 "phrase": hit.get("phrase"),
             }

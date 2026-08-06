@@ -17,6 +17,14 @@ DEFAULT_OVERLAYS: dict[str, Any] = {
     "accentName": "cool_mist_sky",
     "ink": "#ffffff",
     "dim": "rgba(255,255,255,0.55)",
+    # Readable on-screen time (OverlayLayer fades out; do not hard-cut early)
+    "dwell": {
+        "chip_sec": 4.0,
+        "chapter_sec": 5.0,
+        "diagram_sec": 7.5,
+        "emphasis_sec": 2.4,
+        "min_sec": 1.8,
+    },
     "fonts": {
         "display": "Syne",
         "ui": "Instrument Sans",

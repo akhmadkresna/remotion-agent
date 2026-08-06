@@ -11,24 +11,32 @@
 
 ## Behavior
 
-1. `ae edl-suggest .` → `edit/edl.suggest.json` from cam transcript silence gaps
+1. `ae edl-suggest .` → `edit/edl.suggest.json` from cam transcript (silence + wait + repeat)
 2. Agent proposes keep length / strategy → **wait for confirm**
 3. `ae edl-suggest . --apply` (or copy) → `edit/edl.json`
 4. `ae cut .` → per-segment extract with 30ms audio fades → `edit/preview.mp4`
 
-### Silence-cut formula (tutorial defaults)
+### Silence / wait / repeat (tutorial defaults)
+
+Aggressive tutorial defaults — do **not** leave full AI wait / spinner time on screen.
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `gap_cut_sec` | 0.5 | Cut silences ≥ this |
-| `hold_if_gap_sec` | 5.0 | Longer gaps (AI waits) keep a short hold |
-| `hold_sec` | 1.5 | Hold duration when collapsing long gaps |
-| `min_keep_sec` | 0.4 | Drop tiny ranges |
-| pads | 0.05 / 0.08 | Word-boundary snap pads |
+| `gap_cut_sec` | 0.35 | Cut silences ≥ this |
+| `hold_if_gap_sec` | 3.5 | Longer gaps (AI/screen waits) → short beat only |
+| `hold_sec` | 0.7 | Beat kept when collapsing long gaps (not full wait UI) |
+| `min_keep_sec` | 0.35 | Drop tiny ranges |
+| `cut_repeats` | true | Drop near-duplicate phrases (Jaccard) |
+| `repeat_similarity` | 0.82 | Similarity threshold |
+| `repeat_window_sec` | 45 | Look-back for repeats |
+| `cut_wait_speech` | true | Clamp "tunggu/sebentar/loading/…" |
+| `wait_speech_max_sec` | 0.7 | Max keep for wait-filler speech |
+| pads | 0.04 / 0.06 | Word-boundary snap pads |
 
 ```bash
-ae edl-suggest . --gap-cut 0.5 --hold-if-gap 5 --hold 1.5
-ae edl-suggest . --source-end 1887   # CapCut-style source window
+ae edl-suggest .                          # style radio_edit.* defaults
+ae edl-suggest . --gap-cut 0.35 --hold-if-gap 3.5 --hold 0.7
+ae edl-suggest . --source-end 1887        # CapCut-style source window
 # after confirm:
 ae edl-suggest . --apply
 ae cut .

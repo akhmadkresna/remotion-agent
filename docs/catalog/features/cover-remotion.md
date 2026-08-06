@@ -42,6 +42,8 @@ Kinds: `chapter` · `emphasis` · `diagram` · `chip`. See skill hard rule 11.
 
 **Density / relevance:** structure (chip/chapter/diagram + long-screen section quotas) is reserved first; emphasis is best-fit from an ID payoff lexicon, scored by screen-enter proximity. Min gaps (~90s chapters, ~25s emphasis). Caps ~1 sting / 70s keep.
 
+**Dwell (readable MG):** style `overlays.dwell` — chip ~4s, chapter ~5s, diagram ~7.5s, emphasis ≥2.4s (min 1.8s). Remap floors `durationSec` by kind; Remotion `OverlayLayer` fades in/out (no hard pop-off).
+
 **Audio rule (hard):** every non-`cam` clip is muted in Remotion. Screen never contributes audio.
 
 ## Behavior

@@ -8,7 +8,9 @@ from pathlib import Path
 from agentic_editor.cover.overlay_suggest import (
     caps_for_duration,
     companion_framing_event,
+    ensure_overlay_dwell,
     find_payoff_hits,
+    get_dwell_holds,
     is_mostly_screen,
     merge_framing_into_events,
     min_gap_ok,
@@ -25,6 +27,19 @@ def test_caps_scale_and_reserve_structure():
     assert long["target_total"] > short["target_total"]
     assert long["structure_reserve"] >= short["structure_reserve"]
     assert long["target_total"] >= long["structure_reserve"]
+
+
+def test_dwell_holds_from_style_are_readable():
+    holds = get_dwell_holds("tutorial")
+    assert holds["chip"] >= 3.5
+    assert holds["chapter"] >= 4.5
+    assert holds["diagram"] >= 6.0
+    assert holds["emphasis"] >= 2.0
+    assert holds["min"] >= 1.5
+    s, e = ensure_overlay_dwell(10.0, 10.8, kind="chip")
+    assert e - s >= holds["chip"] - 0.01
+    s2, e2 = ensure_overlay_dwell(20.0, 20.5, kind="emphasis")
+    assert e2 - s2 >= holds["emphasis"] - 0.01
 
 
 def test_short_label_curates_notes():

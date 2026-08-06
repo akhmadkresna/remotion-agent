@@ -58,7 +58,7 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
 1. **Inventory** — `ae ingest .` → `edit/takes_packed.md`
 2. **Converse** — describe material; ask shaped questions
 3. **Propose** radio-edit strategy (4–8 sentences) → **wait for confirm**
-4. **EDL suggest** — `ae edl-suggest .` (silence-cut; style `radio_edit.*`) → review `edit/edl.suggest.json`
+4. **EDL suggest** — `ae edl-suggest .` (aggressive silence + wait-speech clamp + repeat-cut; style `radio_edit.*`) → review `edit/edl.suggest.json`
    → confirm → `--apply` or write `edit/edl.json`
 5. **Cut** — `ae cut .` → `edit/preview.mp4`
 6. **Cover** (if `sources.screen` exists):
@@ -69,6 +69,7 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
 6b. **Overlays (A-roll MG)** — chapter / emphasis / diagram / chip:
    - Run `ae overlay-suggest .` → `edit/overlays.suggest.json` (includes `framing_events`)
    - Propose sparse Bold-mist plan synced to cover + zoom → **wait for confirm**
+   - Dwell must be readable (`overlays.dwell`; fade-out in Remotion) — do not accept ~1s pops
    - Write `cover.json` `overlays[]` + merge companion `framing` into `events[]`
      (source-time, word-snapped) → `ae cover .` / `ae compose .`
 6c. **Mezzanine** (if raw is multi‑GB / higher than project res/fps) — `ae mezzanine .`

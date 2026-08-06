@@ -274,7 +274,9 @@ def cmd_edl_suggest(args: argparse.Namespace) -> int:
     print(
         f"Wrote {out.relative_to(episode)} "
         f"({len(ranges)} ranges, keep={meta.get('keep_sec', 0):.1f}s; "
-        f"gap_cut={meta.get('gap_cut_sec')}, hold_if={meta.get('hold_if_gap_sec')}→{meta.get('hold_sec')}s)"
+        f"gap_cut={meta.get('gap_cut_sec')}, hold_if={meta.get('hold_if_gap_sec')}→{meta.get('hold_sec')}s; "
+        f"drop_repeat={meta.get('dropped_repeat', 0)}, "
+        f"wait_clamp={meta.get('clamped_wait', 0)}/{meta.get('dropped_wait', 0)})"
     )
     print("Review with the user, then: ae edl-suggest . --apply   # or copy into edit/edl.json")
     print("Next: ae cut .")

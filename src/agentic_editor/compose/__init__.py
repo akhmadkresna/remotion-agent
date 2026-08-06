@@ -195,6 +195,7 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
             timeline,
             abs_sources,
             crop_cfg=crop_cfg,
+            episode=episode,
             verbose=verbose,
         )
 
@@ -216,15 +217,66 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
     return out
 
 
+def _load_stable_window_crop(episode: Path) -> dict[str, Any] | None:
+    """Prefer hand-tuned / verified edit/window_crop.json when present."""
+    path = episode / "edit" / "window_crop.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    stable = data.get("stable") if isinstance(data, dict) else None
+    if not isinstance(stable, dict) or not stable.get("ok", True):
+        return None
+    norm = stable.get("normalized")
+    if not isinstance(norm, dict):
+        return None
+    try:
+        return {
+            "normalized": {
+                "x": float(norm["x"]),
+                "y": float(norm["y"]),
+                "w": float(norm["w"]),
+                "h": float(norm["h"]),
+            },
+            "px": {
+                "x": int(stable["x"]),
+                "y": int(stable["y"]),
+                "w": int(stable["w"]),
+                "h": int(stable["h"]),
+            },
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _attach_smart_window_crops(
     timeline: dict[str, Any],
     abs_sources: dict[str, str],
     *,
     crop_cfg: dict[str, Any],
+    episode: Path | None = None,
     verbose: bool = True,
 ) -> None:
     """Annotate float_centered clips with normalized windowCrop from pixel detect."""
     from agentic_editor.cover.window_crop import detect_window_crop
+
+    stable = _load_stable_window_crop(episode) if episode is not None else None
+    if stable is not None:
+        n = 0
+        for clip in timeline.get("clips") or []:
+            if clip.get("layout") != "float_centered":
+                continue
+            clip["windowCrop"] = dict(stable["normalized"])
+            clip["windowCropPx"] = dict(stable["px"])
+            n += 1
+        if verbose and n:
+            print(
+                f"• smart_window_detect → {n} float clip(s) "
+                f"(stable edit/window_crop.json)"
+            )
+        return
 
     kwargs = {
         "analysis_max_width": int(crop_cfg.get("analysisMaxWidth") or 480),

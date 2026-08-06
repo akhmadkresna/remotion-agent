@@ -94,14 +94,20 @@ export const AgenticTimeline: React.FC<TimelineProps> = ({ timeline }) => {
     (c) => c.layout === "full" || c.layout === "float_centered",
   );
   const pipClips = (timeline.clips || []).filter((c) => c.layout === "pip_corner");
-  const hasFloat = mainClips.some((c) => c.layout === "float_centered");
+  // Only mute punch on the *current* float beat — not for the whole episode.
+  const activeMainIsFloat = mainClips.some(
+    (c) =>
+      c.layout === "float_centered" &&
+      t >= c.fromSec &&
+      t < c.fromSec + c.durationSec,
+  );
 
   return (
     <AbsoluteFill style={{ background: canvasBackground(timeline) }}>
       <AbsoluteFill
         style={{
           overflow: "hidden",
-          transform: hasFloat ? undefined : `scale(${punchScale})`,
+          transform: activeMainIsFloat ? undefined : `scale(${punchScale})`,
           transformOrigin: "center 42%",
         }}
       >

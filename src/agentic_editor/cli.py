@@ -1,4 +1,4 @@
-"""ae CLI — doctor, new, ingest, cut, cover, compose, qa, promote-check."""
+"""ae CLI — doctor, new, ingest, cut, cover, cover-suggest, overlay-suggest, compose, qa, promote-check."""
 
 from __future__ import annotations
 
@@ -19,6 +19,9 @@ from agentic_editor.compose import prepare_compose, render_compose, run_studio
 from agentic_editor.compose.mezzanine import build_mezzanines
 from agentic_editor.cover import example_cover, write_timeline
 from agentic_editor.cover import build_timeline_from_edl_and_cover
+from agentic_editor.cover.suggest import suggest_cover, write_cover_suggest
+from agentic_editor.cover.overlay_suggest import suggest_overlays, write_overlay_suggest
+from agentic_editor.cover.style_load import load_overlays, load_screen_explainer
 from agentic_editor.editor.edl import example_edl, load_edl
 from agentic_editor.editor.qa import qa_episode_preview
 from agentic_editor.editor.render import render_edl
@@ -177,16 +180,108 @@ def cmd_cover(args: argparse.Namespace) -> int:
         sources.setdefault(name, str((edit / rel).resolve() if not Path(rel).is_absolute() else rel))
     edl["sources"] = sources
     cover = json.loads(cover_path.read_text(encoding="utf-8"))
+    style_name = str(cfg.get("style") or "tutorial")
     timeline = build_timeline_from_edl_and_cover(
         edl,
         cover,
         fps=int(cfg.get("fps", 30)),
         width=int(cfg.get("width", 1920)),
         height=int(cfg.get("height", 1080)),
+        screen_explainer=load_screen_explainer(style_name),
+        overlays=load_overlays(style_name),
     )
     out = edit / "timeline.json"
     write_timeline(out, timeline)
-    print(f"Wrote {out.relative_to(episode)} ({len(timeline['clips'])} clips, {timeline['durationSec']:.1f}s)")
+    n_ov = len(timeline.get("overlays") or [])
+    print(
+        f"Wrote {out.relative_to(episode)} "
+        f"({len(timeline['clips'])} clips, {n_ov} overlays, {timeline['durationSec']:.1f}s)"
+    )
+    return 0
+
+
+def cmd_cover_suggest(args: argparse.Namespace) -> int:
+    episode = resolve_episode(args.episode)
+    cfg = load_project(episode)
+    sources = cfg.get("sources") or {}
+    if "screen" not in sources:
+        print("No screen source in project.yaml — nothing to suggest (full-cam only)", file=sys.stderr)
+        return 1
+    suggestion = suggest_cover(episode, skip_activity_probe=bool(args.skip_activity))
+    out = write_cover_suggest(episode, suggestion)
+    meta = suggestion.get("_meta") or {}
+    events = suggestion.get("events") or []
+    print(
+        f"Wrote {out.relative_to(episode)} "
+        f"({len(events)} screen_with_cam event(s); "
+        f"deixis={meta.get('deixis_hits', 0)}, activity_bins={meta.get('activity_bins', 0)})"
+    )
+    print("Review, copy into edit/cover.json (or merge events), then: ae cover .")
+    if args.apply and events:
+        cover_path = episode / "edit" / "cover.json"
+        if cover_path.is_file():
+            cover = json.loads(cover_path.read_text(encoding="utf-8"))
+        else:
+            cover = example_cover()
+        # Replace prior screen_with_cam / cam_pip suggestions; keep framing/punch
+        kept = [
+            e
+            for e in (cover.get("events") or [])
+            if str(e.get("type") or "").lower() not in ("screen_with_cam", "cam_pip")
+        ]
+        cover["events"] = kept + list(events)
+        cover.setdefault("camera_play", suggestion.get("camera_play") or {})
+        cover_path.write_text(json.dumps(cover, indent=2) + "\n", encoding="utf-8")
+        print(f"Merged suggested events into {cover_path.relative_to(episode)}")
+    return 0
+
+
+def cmd_overlay_suggest(args: argparse.Namespace) -> int:
+    episode = resolve_episode(args.episode)
+    suggestion = suggest_overlays(episode)
+    out = write_overlay_suggest(episode, suggestion)
+    meta = suggestion.get("_meta") or {}
+    counts = meta.get("counts") or {}
+    overlays = suggestion.get("overlays") or []
+    framing_events = suggestion.get("framing_events") or []
+    print(
+        f"Wrote {out.relative_to(episode)} "
+        f"({counts.get('total', len(overlays))} overlays: "
+        f"chapter={counts.get('chapter', 0)}, "
+        f"emphasis={counts.get('emphasis', 0)}, "
+        f"diagram={counts.get('diagram', 0)}, "
+        f"chip={counts.get('chip', 0)}; "
+        f"framing_companions={counts.get('framing_companions', len(framing_events))}; "
+        f"screen={counts.get('on_screen', 0)} cam={counts.get('on_cam', 0)})"
+    )
+    if not meta.get("has_cover"):
+        print(
+            "Note: no edit/cover.json yet — chapter/diagram will attach medium/wide "
+            "framing companions for full-cam. Prefer running cover first."
+        )
+    print("Propose/adjust with the user, then confirm before writing cover.json.")
+    print(
+        "After confirm: merge overlays[] + framing companions into cover.json events[], "
+        "then: ae cover ."
+    )
+    if args.apply and overlays:
+        from agentic_editor.cover.overlay_suggest import merge_framing_into_events
+
+        cover_path = episode / "edit" / "cover.json"
+        if cover_path.is_file():
+            cover = json.loads(cover_path.read_text(encoding="utf-8"))
+        else:
+            cover = example_cover()
+        cover["overlays"] = list(overlays)
+        cover["events"] = merge_framing_into_events(
+            list(cover.get("events") or []),
+            list(framing_events),
+        )
+        cover_path.write_text(json.dumps(cover, indent=2) + "\n", encoding="utf-8")
+        print(
+            f"Wrote overlays + {len(framing_events)} framing companion(s) into "
+            f"{cover_path.relative_to(episode)} (--apply)"
+        )
     return 0
 
 
@@ -282,6 +377,41 @@ def build_parser() -> argparse.ArgumentParser:
     cov = sub.add_parser("cover", help="Merge EDL + cover.json → timeline.json")
     cov.add_argument("episode", nargs="?", default=".")
     cov.set_defaults(func=cmd_cover)
+
+    cs = sub.add_parser(
+        "cover-suggest",
+        help="Suggest screen_with_cam ranges from transcript deixis + screen activity",
+    )
+    cs.add_argument("episode", nargs="?", default=".")
+    cs.add_argument(
+        "--skip-activity",
+        action="store_true",
+        help="Skip ffmpeg screen activity probe (deixis-only)",
+    )
+    cs.add_argument(
+        "--apply",
+        action="store_true",
+        help="Merge suggested screen_with_cam events into edit/cover.json",
+    )
+    cs.set_defaults(func=cmd_cover_suggest)
+
+    osug = sub.add_parser(
+        "overlay-suggest",
+        help=(
+            "Suggest sparse A-roll MG overlays (chapter/emphasis/diagram/chip) "
+            "from EDL + ASR, gated by cover mode + camera_play framing"
+        ),
+    )
+    osug.add_argument("episode", nargs="?", default=".")
+    osug.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "Write overlays[] + companion framing events into edit/cover.json "
+            "(only after user confirm)"
+        ),
+    )
+    osug.set_defaults(func=cmd_overlay_suggest)
 
     mez = sub.add_parser(
         "mezzanine",

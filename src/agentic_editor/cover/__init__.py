@@ -18,6 +18,10 @@ EMPHASIS_NOTE_RE = re.compile(
     re.I,
 )
 
+SCREEN_WITH_CAM_TYPES = frozenset({"screen_with_cam", "cam_pip"})
+SCREEN_FULL_TYPES = frozenset({"screen", "screen_full"})
+PIP_TYPES = frozenset({"pip", "screen_pip"})
+
 
 def _scales(camera_play: dict[str, Any]) -> dict[str, float]:
     raw = camera_play.get("scales") or {}
@@ -91,6 +95,11 @@ def _subdivide_range(
     return parts
 
 
+def _clip_muted(source: str) -> bool:
+    """Audio always from cam; every other source is visual-only."""
+    return str(source) != "cam"
+
+
 def build_timeline_from_edl_and_cover(
     edl: dict[str, Any],
     cover: dict[str, Any] | None,
@@ -98,8 +107,15 @@ def build_timeline_from_edl_and_cover(
     fps: int = 30,
     width: int = 1920,
     height: int = 1080,
+    screen_explainer: dict[str, Any] | None = None,
+    overlays: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge radio-edit EDL with cover + camera_play into a Remotion timeline."""
+    from agentic_editor.cover.style_load import (
+        DEFAULT_OVERLAYS,
+        DEFAULT_SCREEN_EXPLAINER,
+    )
+
     cover = cover or {}
     camera_play = cover.get("camera_play") or {}
     scales = _scales(camera_play)
@@ -109,6 +125,15 @@ def build_timeline_from_edl_and_cover(
     captions: list[dict[str, Any]] = list(cover.get("captions") or [])
     snap = bool(camera_play.get("snap_on_cuts", True))
     max_hold = float(camera_play.get("max_hold_sec", 16.0))
+    se = screen_explainer or DEFAULT_SCREEN_EXPLAINER
+    ov_style = overlays or DEFAULT_OVERLAYS
+    float_presentation = str(
+        (se.get("screen") or {}).get("presentation") or "float_centered"
+    )
+
+    from agentic_editor.cover.remap import build_timeline_overlays
+
+    timeline_overlays = build_timeline_overlays(edl, cover)
 
     out_t = 0.0
     global_clip_i = 0
@@ -121,14 +146,42 @@ def build_timeline_from_edl_and_cover(
 
         visual_src = src
         layout = "full"
-        pip_ev = None
+        pip_ev: dict[str, Any] | None = None
+        screen_visual = False
+
         for ev in _events_overlapping(cover_events, range_start, range_end):
             kind = (ev.get("type") or "").lower()
-            if kind in ("screen", "screen_full"):
+            if kind in SCREEN_WITH_CAM_TYPES:
                 visual_src = ev.get("source") or "screen"
-                layout = "full"
-            elif kind in ("pip", "screen_pip"):
-                pip_ev = ev
+                screen_visual = True
+                layout = float_presentation
+                pip_ev = {
+                    "start": ev.get("start", range_start),
+                    "end": ev.get("end", range_end),
+                    "source": ev.get("pip_source") or "cam",
+                    "note": ev.get("note"),
+                }
+            elif kind in SCREEN_FULL_TYPES:
+                visual_src = ev.get("source") or "screen"
+                screen_visual = True
+                layout = float_presentation
+            elif kind in PIP_TYPES:
+                pip_ev = dict(ev)
+
+        # Screen mode is always screen + cam PIP (cam carries audio).
+        if screen_visual and pip_ev is None:
+            pip_ev = {
+                "start": range_start,
+                "end": range_end,
+                "source": "cam",
+                "note": "auto cam for audio/pip",
+            }
+        elif pip_ev is not None and not pip_ev.get("source"):
+            # Default overlay: cam when main is screen; else legacy screen-over-cam.
+            pip_ev = {
+                **pip_ev,
+                "source": "cam" if screen_visual or visual_src == "screen" else "screen",
+            }
 
         # Emphasis punches / punch-outs (output timeline coords)
         for ev in _events_overlapping(cover_events, range_start, range_end):
@@ -147,32 +200,37 @@ def build_timeline_from_edl_and_cover(
                 }
             )
 
+        # Do not digital-multicam-crop UI screen recordings.
+        do_snap = snap and layout == "full" and not screen_visual
         segments = (
             _subdivide_range(range_start, range_end, max_hold=max_hold)
-            if snap and layout == "full"
+            if do_snap
             else [(range_start, range_end)]
         )
 
         for seg_i, (seg_start, seg_end) in enumerate(segments):
             seg_dur = seg_end - seg_start
-            framing, motion = _pick_base_framing(
-                range_index=global_clip_i, note=note, camera_play=camera_play
-            )
-            scale = _framing_scale(framing, scales)
+            if screen_visual:
+                framing, motion, scale = "wide", "hold", 1.0
+            else:
+                framing, motion = _pick_base_framing(
+                    range_index=global_clip_i, note=note, camera_play=camera_play
+                )
+                scale = _framing_scale(framing, scales)
 
-            # Explicit framing events win for this sub-segment
-            for ev in _events_overlapping(cover_events, seg_start, seg_end):
-                kind = (ev.get("type") or "").lower()
-                if kind != "framing":
-                    continue
-                framing = str(ev.get("framing") or framing)
-                motion = str(ev.get("motion") or motion)
-                scale = _framing_scale(framing, scales, ev.get("scale"))
+                # Explicit framing events win for this sub-segment
+                for ev in _events_overlapping(cover_events, seg_start, seg_end):
+                    kind = (ev.get("type") or "").lower()
+                    if kind != "framing":
+                        continue
+                    framing = str(ev.get("framing") or framing)
+                    motion = str(ev.get("motion") or motion)
+                    scale = _framing_scale(framing, scales, ev.get("scale"))
 
-            if motion == "hold" and seg_dur >= 12:
-                motion = "drift"
-            if motion == "snap" and seg_dur >= 14 and framing != "wide":
-                motion = "drift"
+                if motion == "hold" and seg_dur >= 12:
+                    motion = "drift"
+                if motion == "snap" and seg_dur >= 14 and framing != "wide":
+                    motion = "drift"
 
             clips.append(
                 {
@@ -187,6 +245,7 @@ def build_timeline_from_edl_and_cover(
                     "framing": framing,
                     "scale": scale,
                     "motion": motion,
+                    "muted": _clip_muted(visual_src),
                 }
             )
             out_t += seg_dur
@@ -200,11 +259,12 @@ def build_timeline_from_edl_and_cover(
             )
             # pip sits on the parent range start; output time already advanced — place relative to range
             pip_from = out_t - dur_total + local
+            pip_source = str(pip_ev.get("source") or "cam")
             clips.append(
                 {
                     "id": f"pip-{len(clips)}",
                     "track": "overlay",
-                    "source": pip_ev.get("source") or "screen",
+                    "source": pip_source,
                     "sourceIn": float(pip_ev.get("start", range_start)),
                     "sourceOut": float(pip_ev.get("end", range_end)),
                     "fromSec": max(0.0, pip_from),
@@ -213,6 +273,7 @@ def build_timeline_from_edl_and_cover(
                     "framing": "medium",
                     "scale": 1.0,
                     "motion": "hold",
+                    "muted": _clip_muted(pip_source),
                 }
             )
 
@@ -227,6 +288,7 @@ def build_timeline_from_edl_and_cover(
         "clips": clips,
         "effects": effects,
         "captions": captions,
+        "overlays": timeline_overlays,
         "camera_play": {
             "snap_on_cuts": snap,
             "home": camera_play.get("home", "medium"),
@@ -234,6 +296,7 @@ def build_timeline_from_edl_and_cover(
             "max_hold_sec": max_hold,
             "scales": scales,
         },
+        "presentation": {"screenExplainer": se, "overlays": ov_style},
     }
 
 
@@ -268,6 +331,13 @@ def example_cover() -> dict[str, Any]:
                 "scale": 1.12,
                 "note": "emphasize key line",
             },
+            {
+                "type": "screen_with_cam",
+                "start": 20.0,
+                "end": 35.0,
+                "note": "demo UI with soft-float cam PIP",
+            },
         ],
         "captions": [],
+        "overlays": [],
     }

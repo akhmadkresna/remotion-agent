@@ -9,8 +9,9 @@ import {
 } from "remotion";
 import { SourceClip } from "./components/SourceClip";
 import { CaptionLayer } from "./components/CaptionLayer";
+import { OverlayLayer } from "./components/OverlayLayer";
 import { MissingTimelineBanner } from "./components/MissingTimelineBanner";
-import type { TimelineProps } from "./types";
+import { DEFAULT_OVERLAY_STYLE, DEFAULT_SCREEN_EXPLAINER, type TimelineProps } from "./types";
 
 function looksLikeEmptyTimeline(timeline: TimelineProps["timeline"]): string | null {
   const clips = timeline?.clips || [];
@@ -32,6 +33,17 @@ function looksLikeEmptyTimeline(timeline: TimelineProps["timeline"]): string | n
   return null;
 }
 
+function canvasBackground(timeline: TimelineProps["timeline"]): string {
+  const se =
+    timeline.presentation?.screenExplainer || DEFAULT_SCREEN_EXPLAINER;
+  const bg = se.canvas?.background || DEFAULT_SCREEN_EXPLAINER.canvas!.background!;
+  const deep =
+    se.canvas?.backgroundDeep || DEFAULT_SCREEN_EXPLAINER.canvas!.backgroundDeep!;
+  const hasFloat = (timeline.clips || []).some((c) => c.layout === "float_centered");
+  if (!hasFloat) return "#0a0a0a";
+  return `radial-gradient(ellipse 75% 60% at 50% 50%, ${bg} 0%, ${deep} 78%, #b7c2cd 100%)`;
+}
+
 export const AgenticTimeline: React.FC<TimelineProps> = ({ timeline }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -41,6 +53,9 @@ export const AgenticTimeline: React.FC<TimelineProps> = ({ timeline }) => {
   if (emptyReason) {
     return <MissingTimelineBanner reason={emptyReason} />;
   }
+
+  const screenExplainer =
+    timeline.presentation?.screenExplainer || DEFAULT_SCREEN_EXPLAINER;
 
   const punchScale = (() => {
     let scale = 1;
@@ -75,15 +90,18 @@ export const AgenticTimeline: React.FC<TimelineProps> = ({ timeline }) => {
     return scale;
   })();
 
-  const mainClips = (timeline.clips || []).filter((c) => c.layout === "full");
+  const mainClips = (timeline.clips || []).filter(
+    (c) => c.layout === "full" || c.layout === "float_centered",
+  );
   const pipClips = (timeline.clips || []).filter((c) => c.layout === "pip_corner");
+  const hasFloat = mainClips.some((c) => c.layout === "float_centered");
 
   return (
-    <AbsoluteFill style={{ backgroundColor: "#0a0a0a" }}>
+    <AbsoluteFill style={{ background: canvasBackground(timeline) }}>
       <AbsoluteFill
         style={{
           overflow: "hidden",
-          transform: `scale(${punchScale})`,
+          transform: hasFloat ? undefined : `scale(${punchScale})`,
           transformOrigin: "center 42%",
         }}
       >
@@ -97,10 +115,13 @@ export const AgenticTimeline: React.FC<TimelineProps> = ({ timeline }) => {
               <SourceClip
                 src={src}
                 sourceIn={clip.sourceIn}
-                layout="full"
+                layout={clip.layout}
                 scale={clip.scale ?? 1}
                 motion={clip.motion ?? "snap"}
                 durationSec={clip.durationSec}
+                muted={clip.muted ?? clip.source !== "cam"}
+                windowCrop={clip.windowCrop}
+                screenExplainer={screenExplainer}
               />
             </Sequence>
           );
@@ -121,12 +142,18 @@ export const AgenticTimeline: React.FC<TimelineProps> = ({ timeline }) => {
               scale={clip.scale ?? 1}
               motion={clip.motion ?? "snap"}
               durationSec={clip.durationSec}
+              muted={clip.muted ?? clip.source !== "cam"}
+              screenExplainer={screenExplainer}
             />
           </Sequence>
         );
       })}
 
       <CaptionLayer captions={timeline.captions || []} />
+      <OverlayLayer
+        overlays={timeline.overlays || []}
+        styleTokens={timeline.presentation?.overlays || DEFAULT_OVERLAY_STYLE}
+      />
     </AbsoluteFill>
   );
 };

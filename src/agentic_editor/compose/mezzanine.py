@@ -115,7 +115,8 @@ def encode_mezzanine(
         raise FileNotFoundError("ffmpeg not found on PATH")
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + ".partial")
+    # Keep a real .mp4 extension so ffmpeg can pick the muxer (`.mp4.partial` fails).
+    tmp = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
     if tmp.exists():
         tmp.unlink()
 
@@ -149,6 +150,8 @@ def encode_mezzanine(
         "48000",
         "-movflags",
         "+faststart",
+        "-f",
+        "mp4",
         str(tmp),
     ]
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

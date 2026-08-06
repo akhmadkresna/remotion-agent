@@ -74,6 +74,8 @@ export const CoverEventSchema = z.object({
   type: z.enum([
     "screen",
     "screen_full",
+    "screen_with_cam",
+    "cam_pip",
     "pip",
     "screen_pip",
     "punch_in",
@@ -82,12 +84,30 @@ export const CoverEventSchema = z.object({
     "framing",
   ]),
   source: z.string().optional(),
+  /** Overlay source for screen_with_cam (default cam). */
+  pip_source: z.string().optional(),
   start: z.number(),
   end: z.number(),
   duration: z.number().optional(),
   scale: z.number().optional(),
   framing: FramingSchema.optional(),
   motion: FramingMotionSchema.optional(),
+  note: z.string().optional(),
+});
+
+/** A-roll MG creatives (source-time). Locked look: Bold + cool mist. */
+export const OverlayKindSchema = z.enum(["chapter", "emphasis", "diagram", "chip"]);
+
+export const CoverOverlaySchema = z.object({
+  id: z.string().optional(),
+  kind: OverlayKindSchema,
+  start: z.number(),
+  end: z.number(),
+  source: z.string().default("cam"),
+  text: z.string().optional(),
+  kicker: z.string().optional(),
+  title: z.string().optional(),
+  steps: z.array(z.string()).optional(),
   note: z.string().optional(),
 });
 
@@ -110,6 +130,8 @@ export const CameraPlaySchema = z.object({
 export const CoverSchema = z.object({
   camera_play: CameraPlaySchema.default({}),
   events: z.array(CoverEventSchema).default([]),
+  /** Sparse MG creatives in cam source time — confirm before write. */
+  overlays: z.array(CoverOverlaySchema).default([]),
   captions: z
     .array(
       z.object({
@@ -121,6 +143,13 @@ export const CoverSchema = z.object({
     .default([]),
 });
 
+export const WindowCropNormSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  w: z.number(),
+  h: z.number(),
+});
+
 export const TimelineClipSchema = z.object({
   id: z.string(),
   track: z.string(),
@@ -129,10 +158,55 @@ export const TimelineClipSchema = z.object({
   sourceOut: z.number(),
   fromSec: z.number(),
   durationSec: z.number(),
-  layout: z.enum(["full", "pip_corner"]).default("full"),
+  layout: z.enum(["full", "float_centered", "pip_corner"]).default("full"),
   framing: FramingSchema.default("medium"),
   scale: z.number().default(1),
   motion: FramingMotionSchema.default("snap"),
+  /** When true, Remotion plays the clip silent. Audio always comes from cam. */
+  muted: z.boolean().optional(),
+  /** Normalized smart-window crop (0–1 of source frame). */
+  windowCrop: WindowCropNormSchema.optional(),
+});
+
+export const ScreenExplainerSchema = z.object({
+  preset: z.string().optional(),
+  canvas: z
+    .object({
+      background: z.string().optional(),
+      backgroundDeep: z.string().optional(),
+      gradient: z.string().optional(),
+    })
+    .optional(),
+  screen: z.record(z.unknown()).optional(),
+  pip: z.record(z.unknown()).optional(),
+});
+
+export const OverlayStyleSchema = z.object({
+  preset: z.string().optional(),
+  treatment: z.string().optional(),
+  accent: z.string().optional(),
+  accentName: z.string().optional(),
+  ink: z.string().optional(),
+  dim: z.string().optional(),
+  fonts: z
+    .object({
+      display: z.string().optional(),
+      ui: z.string().optional(),
+    })
+    .optional(),
+});
+
+/** Output-timeline MG instance (after EDL remap). */
+export const TimelineOverlaySchema = z.object({
+  id: z.string(),
+  kind: OverlayKindSchema,
+  fromSec: z.number(),
+  durationSec: z.number(),
+  text: z.string().optional(),
+  kicker: z.string().optional(),
+  title: z.string().optional(),
+  steps: z.array(z.string()).optional(),
+  note: z.string().optional(),
 });
 
 export const TimelineSchema = z.object({
@@ -162,6 +236,13 @@ export const TimelineSchema = z.object({
       }),
     )
     .default([]),
+  overlays: z.array(TimelineOverlaySchema).default([]),
+  presentation: z
+    .object({
+      screenExplainer: ScreenExplainerSchema.optional(),
+      overlays: OverlayStyleSchema.optional(),
+    })
+    .optional(),
 });
 
 export type Project = z.infer<typeof ProjectSchema>;
@@ -171,3 +252,5 @@ export type Cover = z.infer<typeof CoverSchema>;
 export type Timeline = z.infer<typeof TimelineSchema>;
 export type Framing = z.infer<typeof FramingSchema>;
 export type FramingMotion = z.infer<typeof FramingMotionSchema>;
+export type CoverOverlay = z.infer<typeof CoverOverlaySchema>;
+export type TimelineOverlay = z.infer<typeof TimelineOverlaySchema>;

@@ -96,7 +96,7 @@ def test_screen_bias_lowers_threshold():
 
 def test_style_radio_config_keeps_sentences():
     cfg = load_style_radio_config("tutorial")
-    assert cfg["gap_cut_sec"] >= 0.55
+    assert cfg["gap_cut_sec"] >= 1.2
     assert cfg["hold_sec"] <= 1.5
     assert cfg["min_keep_sec"] >= 0.8
     assert cfg["cut_repeats"] is True
@@ -104,28 +104,29 @@ def test_style_radio_config_keeps_sentences():
 
 
 def test_edl_suggest_keeps_short_breath_inside_sentence():
-    # 0.4s breath mid-thought must NOT become a hard cut
+    # ~1.2s breath mid-thought must NOT become a hard cut
     words = [
         {"text": "halo", "start": 0.0, "end": 0.4},
         {"text": "dunia", "start": 0.5, "end": 1.2},
         {"text": "oke", "start": 1.3, "end": 2.0},
-        {"text": "lanjut", "start": 2.4, "end": 3.0},
-        {"text": "ya", "start": 3.1, "end": 3.5},
+        {"text": "lanjut", "start": 3.2, "end": 3.8},
+        {"text": "ya", "start": 3.9, "end": 4.3},
     ]
     edl = suggest_edl_from_words(
         words,
-        gap_cut_sec=0.70,
+        gap_cut_sec=1.50,
         hold_if_gap_sec=5.0,
         hold_sec=1.0,
         min_keep_sec=0.5,
         snap=False,
         cut_repeats=False,
         cut_wait_speech=False,
-        silence_gap_sec=0.55,
+        silence_gap_sec=0.60,
+        bridge_gap_sec=2.2,
     )
     ranges = edl["ranges"]
     assert len(ranges) == 1
-    assert ranges[0]["end"] >= 3.4
+    assert ranges[0]["end"] >= 4.2
 
 
 def test_edl_suggest_cuts_medium_silence():
@@ -133,23 +134,25 @@ def test_edl_suggest_cuts_medium_silence():
         {"text": "halo", "start": 0.0, "end": 0.4},
         {"text": "dunia", "start": 0.5, "end": 1.2},
         {"text": "oke", "start": 1.3, "end": 2.0},
-        {"text": "lanjut", "start": 3.5, "end": 4.2},
-        {"text": "ya", "start": 4.3, "end": 5.0},
+        {"text": "lanjut", "start": 4.5, "end": 5.2},
+        {"text": "ya", "start": 5.3, "end": 6.0},
     ]
     edl = suggest_edl_from_words(
         words,
-        gap_cut_sec=0.70,
+        gap_cut_sec=1.50,
         hold_if_gap_sec=5.0,
         hold_sec=1.0,
         min_keep_sec=0.5,
         snap=False,
         cut_repeats=False,
         cut_wait_speech=False,
+        bridge_gap_sec=2.2,
     )
+    # gap 2.5s: above gap_cut, above bridge → hard cut
     ranges = edl["ranges"]
     assert len(ranges) == 2
     assert ranges[0]["end"] <= 2.1
-    assert ranges[1]["start"] >= 3.4
+    assert ranges[1]["start"] >= 4.4
 
 
 def test_edl_suggest_holds_short_beat_on_long_ai_wait():
@@ -159,7 +162,7 @@ def test_edl_suggest_holds_short_beat_on_long_ai_wait():
     ]
     edl = suggest_edl_from_words(
         words,
-        gap_cut_sec=0.70,
+        gap_cut_sec=1.50,
         hold_if_gap_sec=5.0,
         hold_sec=1.0,
         min_keep_sec=0.5,
@@ -201,31 +204,46 @@ def test_edl_suggest_bridges_asr_overlap_repeat():
     ) >= 0.72
     edl = suggest_edl_from_words(
         words,
-        gap_cut_sec=0.70,
+        gap_cut_sec=1.50,
         hold_if_gap_sec=8.0,
         hold_sec=1.0,
         min_keep_sec=0.5,
         snap=False,
         cut_repeats=True,
         repeat_similarity=0.72,
-        bridge_gap_sec=2.5,
+        bridge_gap_sec=2.2,
         bridge_similarity=0.55,
         cut_wait_speech=False,
-        silence_gap_sec=0.55,
+        silence_gap_sec=0.60,
     )
-    # Should not keep two nearly identical openings back-to-back
-    texts = []
-    for r in edl["ranges"]:
-        texts.append(
-            " ".join(
-                w["text"]
-                for w in words
-                if float(w["end"]) > float(r["start"])
-                and float(w["start"]) < float(r["end"])
-            )
-        )
     assert len(edl["ranges"]) <= 2
     assert edl["_meta"]["dropped_repeat"] + edl["_meta"].get("bridged_ranges", 0) >= 1
+
+
+def test_edl_suggest_stitches_mid_thought_breath():
+    """1.9s pause between clause fragments must stay one keep."""
+    words = [
+        {"text": "Kemudian", "start": 26.7, "end": 27.2},
+        {"text": "kayak", "start": 27.4, "end": 28.0},
+        {"text": "kita", "start": 29.9, "end": 30.2},
+        {"text": "ke", "start": 30.3, "end": 30.5},
+        {"text": "cloud", "start": 30.7, "end": 31.1},
+        {"text": "code", "start": 31.3, "end": 31.8},
+    ]
+    edl = suggest_edl_from_words(
+        words,
+        gap_cut_sec=1.50,
+        hold_if_gap_sec=5.0,
+        hold_sec=1.0,
+        min_keep_sec=0.5,
+        snap=False,
+        cut_repeats=False,
+        cut_wait_speech=False,
+        bridge_gap_sec=2.2,
+        silence_gap_sec=0.60,
+    )
+    assert len(edl["ranges"]) == 1
+    assert edl["ranges"][0]["end"] - edl["ranges"][0]["start"] >= 4.5
 
 
 def test_edl_suggest_respects_source_window():
@@ -236,7 +254,7 @@ def test_edl_suggest_respects_source_window():
     ]
     edl = suggest_edl_from_words(
         words,
-        gap_cut_sec=0.70,
+        gap_cut_sec=1.50,
         hold_if_gap_sec=8.0,
         hold_sec=1.0,
         source_start=5.0,
@@ -245,6 +263,7 @@ def test_edl_suggest_respects_source_window():
         min_keep_sec=0.5,
         cut_repeats=False,
         cut_wait_speech=False,
+        bridge_gap_sec=2.2,
     )
     ranges = edl["ranges"]
     assert all(r["start"] >= 5.0 - 0.01 for r in ranges)

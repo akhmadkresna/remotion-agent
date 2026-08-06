@@ -22,13 +22,13 @@ Goal: **clean sentences**, short AI waits — not shredded speech.
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `silence_gap_sec` | 0.55 | Pack words into sentence-ish phrases |
-| `gap_cut_sec` | 0.70 | Cut silences ≥ this (keep mid-sentence breaths) |
+| `silence_gap_sec` | 0.60 | Pack words into sentence-ish phrases |
+| `gap_cut_sec` | 1.50 | Cut silences ≥ this (keep mid-sentence breaths) |
 | `hold_if_gap_sec` | 5.0 | Longer gaps (AI/screen waits) → short beat only |
 | `hold_sec` | 1.0 | Beat kept when collapsing long gaps |
 | `min_keep_sec` | 0.90 | Drop tiny fragments |
 | `cut_repeats` | true | Drop near-duplicate phrases (Jaccard + containment) |
-| `bridge_gap_sec` | 2.5 | Merge ASR-overlap / same-thought neighbors |
+| `bridge_gap_sec` | 2.2 | Always stitch short gaps (breath / mid-thought) |
 | `cut_wait_speech` | true | Clamp short wait prompts only |
 | `wait_speech_max_sec` | 0.9 | Max keep for wait-filler speech |
 | pads | 0.08 / 0.12 | Word-boundary snap pads |

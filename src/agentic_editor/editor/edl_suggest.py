@@ -26,9 +26,9 @@ from agentic_editor.project import load_project
 
 DEFAULT_RADIO_CFG: dict[str, Any] = {
     # Pack into sentence-ish phrases (don't split on every breath)
-    "silence_gap_sec": 0.55,
-    # Cut only clear pauses — 0.35 shredded Indonesian speech
-    "gap_cut_sec": 0.70,
+    "silence_gap_sec": 0.60,
+    # Cut only clear pauses — Indonesian speech often breathes 0.7–1.5s mid-thought
+    "gap_cut_sec": 1.50,
     # Long idle / AI spinner → short beat only
     "hold_if_gap_sec": 5.0,
     "hold_sec": 1.0,
@@ -38,8 +38,8 @@ DEFAULT_RADIO_CFG: dict[str, Any] = {
     "cut_repeats": True,
     "repeat_similarity": 0.72,
     "repeat_window_sec": 60.0,
-    # Merge near keeps that are ASR overlaps / same thought
-    "bridge_gap_sec": 2.5,
+    # Always bridge short gaps (breath); similarity used for true repeats
+    "bridge_gap_sec": 2.2,
     "bridge_similarity": 0.55,
     "cut_wait_speech": True,
     "wait_speech_max_sec": 0.9,
@@ -220,44 +220,86 @@ def _coalesce_ranges(
     bridge_similarity: float,
     min_keep_sec: float,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Merge neighboring keeps that are the same thought / ASR overlap."""
+    """Merge/drop neighboring keeps that are the same thought / ASR overlap."""
     if not ranges:
         return [], 0
+    enriched: list[dict[str, Any]] = []
+    for r in ranges:
+        text = _range_text(words, float(r["start"]), float(r["end"]))
+        enriched.append({**r, "_text": text})
+
     merged = 0
     out: list[dict[str, Any]] = []
-    cur = dict(ranges[0])
-    cur_text = _range_text(words, float(cur["start"]), float(cur["end"]))
-
-    for nxt in ranges[1:]:
+    for nxt in enriched:
+        if not out:
+            out.append(nxt)
+            continue
+        cur = out[-1]
         gap = float(nxt["start"]) - float(cur["end"])
-        nxt_text = _range_text(words, float(nxt["start"]), float(nxt["end"]))
-        sim = phrase_similarity(cur_text, nxt_text)
-        # Overlapping / touching windows → always merge
-        if gap <= 0.05 or (
-            gap <= bridge_gap_sec and sim >= bridge_similarity
-        ):
+        sim = phrase_similarity(str(cur.get("_text") or ""), str(nxt.get("_text") or ""))
+        # Short gap = breath / mid-thought — always stitch (do not require text match)
+        if gap <= bridge_gap_sec:
             cur["end"] = max(float(cur["end"]), float(nxt["end"]))
             if "wait" in str(nxt.get("note") or "") and "wait" not in str(
                 cur.get("note") or ""
             ):
                 cur["note"] = "speech+wait-beat"
-            cur_text = _range_text(words, float(cur["start"]), float(cur["end"]))
+            cur["_text"] = _range_text(words, float(cur["start"]), float(cur["end"]))
             merged += 1
             continue
-        # Later keep almost repeats earlier → drop later
-        if gap <= bridge_gap_sec * 2 and sim >= max(bridge_similarity, 0.72):
+        # Later keep nearly repeats earlier across a medium cut → drop later
+        if gap <= max(bridge_gap_sec * 2, 4.0) and sim >= max(bridge_similarity, 0.70):
+            if (float(nxt["end"]) - float(nxt["start"])) > (
+                float(cur["end"]) - float(cur["start"])
+            ) * 1.15:
+                out[-1] = {
+                    **nxt,
+                    "start": float(cur["start"]),
+                    "end": float(nxt["end"]),
+                    "_text": _range_text(words, float(cur["start"]), float(nxt["end"])),
+                }
             merged += 1
             continue
-        out.append(cur)
-        cur = dict(nxt)
-        cur_text = nxt_text
-    out.append(cur)
+        # Also compare against a few recent keeps (ASR re-says after wait-beat)
+        drop = False
+        for prev in reversed(out[-4:]):
+            if float(nxt["start"]) - float(prev["end"]) > 60.0:
+                break
+            sim2 = phrase_similarity(
+                str(prev.get("_text") or ""), str(nxt.get("_text") or "")
+            )
+            if sim2 >= 0.78:
+                prev_dur = float(prev["end"]) - float(prev["start"])
+                nxt_dur = float(nxt["end"]) - float(nxt["start"])
+                if nxt_dur > prev_dur * 1.2:
+                    prev["end"] = float(nxt["end"])
+                    prev["_text"] = _range_text(
+                        words, float(prev["start"]), float(prev["end"])
+                    )
+                merged += 1
+                drop = True
+                break
+        if drop:
+            continue
+        out.append(nxt)
 
-    cleaned = [
-        {**r, "start": round(float(r["start"]), 3), "end": round(float(r["end"]), 3)}
-        for r in out
-        if float(r["end"]) - float(r["start"]) >= min_keep_sec
-    ]
+    cleaned = []
+    for r in out:
+        r = dict(r)
+        text = str(r.pop("_text", "") or "")
+        # Drop orphan filler fragments ("Nah,", "Oke.") that survive min_keep
+        content_tokens = normalize_phrase(text).split()
+        if len(content_tokens) < 2 and float(r["end"]) - float(r["start"]) < 2.5:
+            merged += 1
+            continue
+        if float(r["end"]) - float(r["start"]) >= min_keep_sec:
+            cleaned.append(
+                {
+                    **r,
+                    "start": round(float(r["start"]), 3),
+                    "end": round(float(r["end"]), 3),
+                }
+            )
     return cleaned, merged
 
 
@@ -266,7 +308,7 @@ def suggest_edl_from_words(
     *,
     source: str = "cam",
     sources: dict[str, str] | None = None,
-    gap_cut_sec: float = 0.70,
+    gap_cut_sec: float = 1.50,
     hold_if_gap_sec: float = 5.0,
     hold_sec: float = 1.0,
     min_keep_sec: float = 0.90,
@@ -279,7 +321,7 @@ def suggest_edl_from_words(
     cut_repeats: bool = True,
     repeat_similarity: float = 0.72,
     repeat_window_sec: float = 60.0,
-    bridge_gap_sec: float = 2.5,
+    bridge_gap_sec: float = 2.2,
     bridge_similarity: float = 0.55,
     cut_wait_speech: bool = True,
     wait_speech_max_sec: float = 0.9,

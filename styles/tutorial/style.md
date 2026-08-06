@@ -68,10 +68,10 @@ camera_play:
     medium: 1.22
     close: 1.42
 # Silence-cut radio-edit (ae edl-suggest). Clean speech + short AI waits.
-# gap_cut ~0.7 keeps breath pauses; bridge merges ASR-overlap repeats.
+# gap_cut ~1.5 keeps mid-thought breaths; bridge stitches gaps ≤2.2s.
 radio_edit:
-  silence_gap_sec: 0.55     # pack sentence-ish phrases
-  gap_cut_sec: 0.70         # do NOT shred mid-sentence breaths
+  silence_gap_sec: 0.60     # pack sentence-ish phrases
+  gap_cut_sec: 1.50         # do NOT shred mid-sentence breaths
   hold_if_gap_sec: 5.0      # AI/screen wait → keep only a beat
   hold_sec: 1.0             # short beat, not full spinner
   min_keep_sec: 0.90
@@ -80,7 +80,7 @@ radio_edit:
   cut_repeats: true
   repeat_similarity: 0.72   # Jaccard + containment
   repeat_window_sec: 60
-  bridge_gap_sec: 2.5       # merge same-thought / ASR overlap neighbors
+  bridge_gap_sec: 2.2       # always stitch short gaps (breath / mid-thought)
   bridge_similarity: 0.55
   cut_wait_speech: true     # short "tunggu/sebentar/loading" only
   wait_speech_max_sec: 0.9

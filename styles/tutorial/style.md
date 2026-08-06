@@ -44,8 +44,9 @@ overlays:
   # Framework default (ae overlay-suggest): couple MG to cover + camera_play
   # - chapter/diagram: prefer screen_with_cam; else emit framing medium/wide
   # - chip: prefer medium framing on full cam
-  # - emphasis: close framing OK
-  # - density: ~1 sting / 90s keep duration
+  # - emphasis: close OK; ID payoff lexicon + screen-enter score (best-fit)
+  # - structure reserved first; section quota on long screen windows
+  # - gaps: ~90s chapters, ~25s emphasis; densify ~1 sting / 70s keep
 punch_in:
   scale: 1.15
   defaultDurationSec: 1.2

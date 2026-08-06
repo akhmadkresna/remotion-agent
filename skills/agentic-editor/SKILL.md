@@ -46,7 +46,9 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
     Never invent timings mid-word. **Default:** overlay plan is gated by cover mode +
     camera_play — chapter/diagram prefer `screen_with_cam` (wide/hold); on full-cam they
     emit medium/wide framing companions so MG does not fight close zooms (`faceClear` /
-    left_third). Emphasis may sit on close. Density scales with keep duration (~1 / 90s).
+    left_third). Emphasis may sit on close. Structure (chip/chapter/diagram + section
+    quotas) is reserved first; emphasis is best-fit from an ID payoff lexicon scored by
+    screen-enter. Gaps ~90s / ~25s; density ~1 sting / 70s keep.
 
 ## Process
 

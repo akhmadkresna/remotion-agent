@@ -34,7 +34,9 @@
 
 Kinds: `chapter` · `emphasis` · `diagram` · `chip`. See skill hard rule 11.
 
-**Default gate (camera / zoom play):** suggest reads `cover.json` screen windows + `camera_play`. Chapter/diagram prefer `screen_with_cam` (already wide/hold). On full-cam they emit companion `framing` medium/wide so MG does not fight close multicam crops (`faceClear`, left_third). Emphasis may use close. Caps scale with keep duration (~1 sting / 90s).
+**Default gate (camera / zoom play):** suggest reads `cover.json` screen windows + `camera_play`. Chapter/diagram prefer `screen_with_cam` (already wide/hold). On full-cam they emit companion `framing` medium/wide so MG does not fight close multicam crops (`faceClear`, left_third). Emphasis may use close.
+
+**Density / relevance:** structure (chip/chapter/diagram + long-screen section quotas) is reserved first; emphasis is best-fit from an ID payoff lexicon, scored by screen-enter proximity. Min gaps (~90s chapters, ~25s emphasis). Caps ~1 sting / 70s keep.
 
 **Audio rule (hard):** every non-`cam` clip is muted in Remotion. Screen never contributes audio.
 

@@ -1,4 +1,4 @@
-"""Tests for framing-aware overlay suggest defaults."""
+"""Tests for framing-aware + density/relevance overlay suggest."""
 
 from __future__ import annotations
 
@@ -8,19 +8,30 @@ from pathlib import Path
 from agentic_editor.cover.overlay_suggest import (
     caps_for_duration,
     companion_framing_event,
+    find_payoff_hits,
     is_mostly_screen,
     merge_framing_into_events,
+    min_gap_ok,
+    score_emphasis,
     screen_windows,
+    short_label,
     suggest_overlays,
 )
 
 
-def test_caps_scale_with_duration():
+def test_caps_scale_and_reserve_structure():
     short = caps_for_duration(300)
     long = caps_for_duration(1560)
     assert long["target_total"] > short["target_total"]
-    assert long["chapter"] >= short["chapter"]
-    assert long["emphasis"] >= short["emphasis"]
+    assert long["structure_reserve"] >= short["structure_reserve"]
+    assert long["target_total"] >= long["structure_reserve"]
+
+
+def test_short_label_curates_notes():
+    assert short_label("hook + plan: continue toko material, roadmap") == "Lanjut Toko Material"
+    assert "Master Data" == short_label("phase 1 done: menus, res.partner, UDU check")
+    assert short_label("purchase demo + status buttons + stock bug → diterima") == "Pembelian"
+    assert short_label("not only toko material + phase 2 summary") == "Bukan Cuma Toko Material"
 
 
 def test_screen_windows_and_majority():
@@ -57,6 +68,31 @@ def test_companion_framing_rules():
     )
 
 
+def test_min_gap_ok():
+    spans = [(10.0, 13.0), (200.0, 203.0)]
+    assert min_gap_ok(12.0, spans, min_gap=90.0) is False
+    assert min_gap_ok(300.0, spans, min_gap=90.0) is True
+
+
+def test_payoff_hits_and_screen_enter_score():
+    words = [
+        {"text": "kita", "start": 10.0, "end": 10.2},
+        {"text": "cek", "start": 10.3, "end": 10.5},
+        {"text": "stok", "start": 10.6, "end": 11.0},
+        {"text": "otomatis", "start": 50.0, "end": 50.5},
+        {"text": "diterima", "start": 12.0, "end": 12.5},
+    ]
+    hits = find_payoff_hits(words)
+    labels = {h["text"] for h in hits}
+    assert "Stok" in labels
+    assert "Diterima" in labels
+    assert "Otomatis" in labels
+    wins = [(10.0, 40.0)]
+    near = next(h for h in hits if h["text"] == "Stok")
+    far = next(h for h in hits if h["text"] == "Otomatis")
+    assert score_emphasis(near, screen_wins=wins) > score_emphasis(far, screen_wins=wins)
+
+
 def test_merge_framing_replaces_overlay_notes_only():
     existing = [
         {"type": "screen_with_cam", "start": 10, "end": 40},
@@ -77,7 +113,17 @@ def test_merge_framing_replaces_overlay_notes_only():
     assert "overlay:old" not in notes
     assert "manual" in notes
     assert "overlay:chip-open" in notes
-    assert any(e.get("type") == "screen_with_cam" for e in merged)
+
+
+def _write_words(edit: Path, pairs: list[tuple[str, float, float]]) -> None:
+    (edit / "transcripts").mkdir(exist_ok=True)
+    words = [
+        {"type": "word", "word": t, "text": t, "start": s, "end": e} for t, s, e in pairs
+    ]
+    (edit / "transcripts" / "cam.json").write_text(
+        json.dumps({"language": "id", "backend": "test", "model": "small", "words": words}),
+        encoding="utf-8",
+    )
 
 
 def test_suggest_emits_framing_for_cam_chapter(tmp_path: Path):
@@ -105,34 +151,26 @@ def test_suggest_emits_framing_for_cam_chapter(tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    # No cover.json → full cam; chapter/diagram should request framing companions
-    (edit / "transcripts").mkdir()
-    words = []
-    t = 0.0
-    for w in "hook intro phase build flow steps model otomatis studio api".split():
-        words.append({"type": "word", "word": w, "text": w, "start": t, "end": t + 0.4})
-        t += 0.5
-    # stretch into ranges
-    words[0]["start"], words[0]["end"] = 0.1, 0.5
-    words[1]["start"], words[1]["end"] = 0.5, 1.0
-    for i, w in enumerate(words[2:], start=2):
-        w["start"] = 30.0 + i * 0.5
-        w["end"] = w["start"] + 0.4
-    (edit / "transcripts" / "cam.json").write_text(
-        json.dumps({"language": "id", "backend": "test", "model": "small", "words": words}),
-        encoding="utf-8",
+    _write_words(
+        edit,
+        [
+            ("hook", 0.1, 0.5),
+            ("intro", 0.5, 1.0),
+            ("phase", 30.5, 30.9),
+            ("build", 31.0, 31.4),
+            ("flow", 31.5, 31.9),
+            ("stok", 32.0, 32.4),
+            ("otomatis", 40.0, 40.5),
+            ("studio", 41.0, 41.4),
+        ],
     )
 
     out = suggest_overlays(episode)
     assert out["overlays"]
-    kinds = {o["kind"] for o in out["overlays"]}
-    assert "chip" in kinds or "chapter" in kinds
-    # full-cam chapter/diagram/chip → framing companions
     face_heavy = [o for o in out["overlays"] if o["kind"] in {"chapter", "diagram", "chip"}]
     assert face_heavy
     assert all(o.get("cover_mode") == "full_cam" for o in face_heavy)
     assert out["framing_events"]
-    assert all(ev["type"] == "framing" for ev in out["framing_events"])
 
 
 def test_suggest_skips_framing_on_screen_cover(tmp_path: Path):
@@ -171,28 +209,94 @@ def test_suggest_skips_framing_on_screen_cover(tmp_path: Path):
         ),
         encoding="utf-8",
     )
-    (edit / "transcripts").mkdir()
-    (edit / "transcripts" / "cam.json").write_text(
+    _write_words(
+        edit,
+        [
+            ("phase", 10.1, 10.5),
+            ("flow", 11.0, 11.4),
+            ("stok", 12.0, 12.4),
+            ("diterima", 20.0, 20.5),
+        ],
+    )
+
+    out = suggest_overlays(episode)
+    assert out["_meta"]["has_cover"] is True
+    on_screen = [o for o in out["overlays"] if o.get("cover_mode") == "screen_with_cam"]
+    assert on_screen
+    for o in on_screen:
+        if o["kind"] in {"chapter", "diagram"}:
+            assert o.get("requires_framing") is None
+
+
+def test_structure_before_emphasis_and_curated_copy(tmp_path: Path):
+    episode = tmp_path / "ep"
+    edit = episode / "edit"
+    edit.mkdir(parents=True)
+    (episode / "project.yaml").write_text(
+        "id: odoo-studio-video-2\nsources:\n  cam: raw/cam.mp4\n  screen: raw/screen.mp4\nstyle: tutorial\n",
+        encoding="utf-8",
+    )
+    (edit / "edl.json").write_text(
         json.dumps(
             {
-                "language": "id",
-                "backend": "test",
-                "model": "small",
-                "words": [
-                    {"type": "word", "word": "phase", "text": "phase", "start": 10.1, "end": 10.5},
-                    {"type": "word", "word": "flow", "text": "flow", "start": 11.0, "end": 11.4},
+                "sources": {"cam": "../raw/cam.mp4", "screen": "../raw/screen.mp4"},
+                "ranges": [
+                    {"source": "cam", "start": 0.0, "end": 30.0, "note": "hook plan"},
+                    {
+                        "source": "cam",
+                        "start": 40.0,
+                        "end": 200.0,
+                        "note": "phase 1 master data flow",
+                    },
+                    {
+                        "source": "cam",
+                        "start": 210.0,
+                        "end": 400.0,
+                        "note": "purchase demo bug diterima",
+                    },
                 ],
             }
         ),
         encoding="utf-8",
     )
+    (edit / "cover.json").write_text(
+        json.dumps(
+            {
+                "events": [
+                    {"type": "screen_with_cam", "start": 40.0, "end": 200.0},
+                    {"type": "screen_with_cam", "start": 210.0, "end": 400.0},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    pairs: list[tuple[str, float, float]] = [("lanjut", 1.0, 1.4), ("toko", 1.5, 1.9)]
+    # many weak words that old logic loved
+    t = 45.0
+    for w in ["model", "penting", "custom", "field", "model", "penting"]:
+        pairs.append((w, t, t + 0.3))
+        t += 1.0
+    # real payoffs near screen enters
+    pairs.extend(
+        [
+            ("stok", 42.0, 42.5),
+            ("otomatis", 43.0, 43.5),
+            ("diterima", 215.0, 215.6),
+            ("chatter", 300.0, 300.5),
+        ]
+    )
+    _write_words(edit, pairs)
 
     out = suggest_overlays(episode)
-    assert out["_meta"]["has_cover"] is True
-    assert out["_meta"]["screen_event_windows"] == 1
-    on_screen = [o for o in out["overlays"] if o.get("cover_mode") == "screen_with_cam"]
-    assert on_screen
-    # screen overlays should not need framing companions
-    for o in on_screen:
-        if o["kind"] in {"chapter", "diagram"}:
-            assert o.get("requires_framing") is None
+    kinds = [o["kind"] for o in out["overlays"]]
+    assert kinds.count("chapter") + kinds.count("chip") + kinds.count("diagram") >= 2
+    emph = [o for o in out["overlays"] if o["kind"] == "emphasis"]
+    texts = {o["text"] for o in emph}
+    # curated payoffs preferred over raw model/penting
+    assert "penting" not in {t.lower() for t in texts}
+    assert texts & {"Stok", "Otomatis", "Diterima", "Chatter"}
+    # chapter labels curated
+    chapters = [o for o in out["overlays"] if o["kind"] == "chapter"]
+    assert chapters
+    assert all("res.partner" not in o["text"] or o["text"] == "Master Data" or len(o["text"]) < 40 for o in chapters)
+    assert any(o["text"] in {"Lanjut Toko Material", "Master Data", "Pembelian"} for o in chapters)

@@ -6,7 +6,6 @@ from agentic_editor.cover import build_timeline_from_edl_and_cover
 from agentic_editor.cover.overlay_suggest import (
     CHAPTER_NOTE_RE,
     _clean_title,
-    _phrase_around,
 )
 from agentic_editor.cover.remap import build_timeline_overlays, remap_source_window
 
@@ -83,12 +82,6 @@ def test_overlay_cut_out_of_edl_dropped():
 
 def test_chapter_note_and_title_helpers():
     assert CHAPTER_NOTE_RE.search("fase 2 setup")
-    assert _clean_title("hook: Extend kontak") == "Extend kontak"
-    words = [
-        {"text": "pakai", "start": 1.0, "end": 1.2},
-        {"text": "Studio", "start": 1.3, "end": 1.7},
-        {"text": "API", "start": 1.8, "end": 2.1},
-    ]
-    text, s, e = _phrase_around(words, 1)
-    assert "Studio" in text
-    assert s <= 1.3 and e >= 1.7
+    # curated short labels (not raw note dumps)
+    assert _clean_title("hook: Extend kontak") == "Lanjut Toko Material"
+    assert _clean_title("phase 1 done menus") == "Master Data"

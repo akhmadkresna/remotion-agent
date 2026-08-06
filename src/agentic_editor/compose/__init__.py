@@ -123,15 +123,33 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
     if cover_path.is_file():
         cover = json.loads(cover_path.read_text(encoding="utf-8"))
 
+    from agentic_editor.cover.style_load import load_overlays, load_screen_explainer
+
+    style_name = str(cfg.get("style") or "tutorial")
+    screen_explainer = load_screen_explainer(style_name)
+    overlays = load_overlays(style_name)
+
     timeline = build_timeline_from_edl_and_cover(
         edl_abs,
         cover,
         fps=int(cfg.get("fps", 30)),
         width=int(cfg.get("width", 1920)),
         height=int(cfg.get("height", 1080)),
+        screen_explainer=screen_explainer,
+        overlays=overlays,
     )
     timeline["sources"] = staged_sources
     timeline["sourcePaths"] = abs_sources  # absolute originals for tooling only
+
+    # Dynamic smart window crop per float_centered clip (midpoint sample).
+    crop_cfg = ((screen_explainer.get("screen") or {}).get("crop") or {})
+    if str(crop_cfg.get("mode") or "") == "smart_window_detect":
+        _attach_smart_window_crops(
+            timeline,
+            abs_sources,
+            crop_cfg=crop_cfg,
+            verbose=verbose,
+        )
 
     out = edit / "timeline.json"
     write_timeline(out, timeline)
@@ -149,6 +167,56 @@ def prepare_compose(episode: Path, *, verbose: bool = True) -> Path:
         print(f"• duration {timeline['durationSec']:.1f}s / {timeline['durationInFrames']} frames")
         print("• preflight OK (staged public media + non-empty timeline)")
     return out
+
+
+def _attach_smart_window_crops(
+    timeline: dict[str, Any],
+    abs_sources: dict[str, str],
+    *,
+    crop_cfg: dict[str, Any],
+    verbose: bool = True,
+) -> None:
+    """Annotate float_centered clips with normalized windowCrop from pixel detect."""
+    from agentic_editor.cover.window_crop import detect_window_crop
+
+    kwargs = {
+        "analysis_max_width": int(crop_cfg.get("analysisMaxWidth") or 480),
+        "chrome_side_inset_frac_max": float(
+            crop_cfg.get("chromeSideInsetFracMax") or 0.12
+        ),
+        "window_relative_pad": float(crop_cfg.get("windowRelativePad") or 0.003),
+    }
+    cache: dict[tuple[str, float], dict[str, Any]] = {}
+    n = 0
+    for clip in timeline.get("clips") or []:
+        if clip.get("layout") != "float_centered":
+            continue
+        src_name = str(clip.get("source") or "")
+        abs_path = abs_sources.get(src_name)
+        if not abs_path or not Path(abs_path).is_file():
+            continue
+        mid = float(clip.get("sourceIn") or 0) + float(clip.get("durationSec") or 0) / 2
+        mid = round(mid, 2)
+        key = (src_name, mid)
+        if key not in cache:
+            try:
+                crop = detect_window_crop(abs_path, t_sec=mid, **kwargs)
+                cache[key] = crop.as_dict()
+            except Exception as exc:  # noqa: BLE001 — compose must not die on crop
+                if verbose:
+                    print(f"• window crop skipped for {src_name}@{mid}s: {exc}")
+                cache[key] = {}
+        if cache[key]:
+            clip["windowCrop"] = cache[key]["normalized"]
+            clip["windowCropPx"] = {
+                "x": cache[key]["x"],
+                "y": cache[key]["y"],
+                "w": cache[key]["w"],
+                "h": cache[key]["h"],
+            }
+            n += 1
+    if verbose and n:
+        print(f"• smart_window_detect → {n} float clip(s)")
 
 
 def run_studio(episode: Path) -> None:

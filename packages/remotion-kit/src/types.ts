@@ -7,6 +7,15 @@ export type FramingMotion =
   | "ease_out"
   | "drift";
 
+export type ClipLayout = "full" | "float_centered" | "pip_corner";
+
+export type WindowCropNorm = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
 export type TimelineClip = {
   id: string;
   track: string;
@@ -15,10 +24,14 @@ export type TimelineClip = {
   sourceOut: number;
   fromSec: number;
   durationSec: number;
-  layout: "full" | "pip_corner";
+  layout: ClipLayout;
   framing: Framing;
   scale: number;
   motion: FramingMotion;
+  /** When true (or source !== cam), clip is silent — audio always from cam. */
+  muted?: boolean;
+  /** Normalized smart-window crop (0–1 of source frame). */
+  windowCrop?: WindowCropNorm;
 };
 
 export type PunchEffect = {
@@ -34,6 +47,71 @@ export type Caption = {
   end: number;
 };
 
+export type OverlayKind = "chapter" | "emphasis" | "diagram" | "chip";
+
+export type TimelineOverlay = {
+  id: string;
+  kind: OverlayKind;
+  fromSec: number;
+  durationSec: number;
+  text?: string;
+  kicker?: string;
+  title?: string;
+  steps?: string[];
+  note?: string;
+};
+
+export type ScreenExplainerStyle = {
+  preset?: string;
+  canvas?: {
+    background?: string;
+    backgroundDeep?: string;
+    gradient?: string;
+  };
+  screen?: {
+    presentation?: string;
+    widthRatio?: number;
+    maxHeightRatio?: number;
+    borderRadiusPx?: number;
+    objectFit?: string;
+  };
+  pip?: {
+    anchor?: string;
+    widthRatio?: number;
+    aspectRatio?: string;
+    insetRightRatio?: number;
+    insetBottomRatio?: number;
+    borderRadiusPx?: number;
+    border?: string;
+    objectFit?: string;
+    objectPosition?: string;
+  };
+};
+
+/** Locked A-roll MG: bold type + cool mist sky accent (mirror styles/tutorial). */
+export type OverlayStyle = {
+  preset?: string;
+  treatment?: "bold";
+  accent?: string;
+  accentName?: string;
+  ink?: string;
+  dim?: string;
+  fonts?: { display?: string; ui?: string };
+};
+
+export const DEFAULT_OVERLAY_STYLE: OverlayStyle = {
+  preset: "bold_mist",
+  treatment: "bold",
+  accent: "#7dd3fc",
+  accentName: "cool_mist_sky",
+  ink: "#ffffff",
+  dim: "rgba(255,255,255,0.55)",
+  fonts: {
+    display: "Syne",
+    ui: "Instrument Sans",
+  },
+};
+
 export type Timeline = {
   fps: number;
   width: number;
@@ -44,6 +122,11 @@ export type Timeline = {
   clips: TimelineClip[];
   effects: PunchEffect[];
   captions: Caption[];
+  overlays?: TimelineOverlay[];
+  presentation?: {
+    screenExplainer?: ScreenExplainerStyle;
+    overlays?: OverlayStyle;
+  };
 };
 
 export type TimelineProps = {
@@ -60,4 +143,33 @@ export const emptyTimeline: Timeline = {
   clips: [],
   effects: [],
   captions: [],
+  overlays: [],
+};
+
+/** Locked cozy + cool mist defaults (mirror styles/tutorial). */
+export const DEFAULT_SCREEN_EXPLAINER: ScreenExplainerStyle = {
+  preset: "cozy",
+  canvas: {
+    background: "#d9e2ec",
+    backgroundDeep: "#c4d0dc",
+    gradient: "radial",
+  },
+  screen: {
+    presentation: "float_centered",
+    widthRatio: 0.78,
+    maxHeightRatio: 0.82,
+    borderRadiusPx: 12,
+    objectFit: "fill",
+  },
+  pip: {
+    anchor: "stage_lower_right",
+    widthRatio: 0.18,
+    aspectRatio: "4:5",
+    insetRightRatio: 0.035,
+    insetBottomRatio: 0.045,
+    borderRadiusPx: 14,
+    border: "none",
+    objectFit: "cover",
+    objectPosition: "center 28%",
+  },
 };

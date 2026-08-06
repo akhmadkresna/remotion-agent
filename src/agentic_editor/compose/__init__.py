@@ -23,6 +23,32 @@ def remotion_kit_dir() -> Path:
     return framework_home() / "packages" / "remotion-kit"
 
 
+def _pnpm_cmd() -> str:
+    """Resolve pnpm for subprocess (Windows: prefer .cmd over .ps1 shim)."""
+    if os.name == "nt":
+        for name in ("pnpm.cmd", "pnpm.exe", "pnpm"):
+            found = shutil.which(name)
+            if found:
+                return found
+    found = shutil.which("pnpm")
+    if found:
+        return found
+    raise FileNotFoundError(
+        "pnpm not found on PATH — install pnpm, then retry ae compose"
+    )
+
+
+def _remotion_cli(kit: Path) -> list[str]:
+    """Prefer local remotion bin; fall back to pnpm exec."""
+    if os.name == "nt":
+        local = kit / "node_modules" / ".bin" / "remotion.CMD"
+    else:
+        local = kit / "node_modules" / ".bin" / "remotion"
+    if local.is_file():
+        return [str(local)]
+    return [_pnpm_cmd(), "exec", "remotion"]
+
+
 def stage_sources_for_remotion(
     abs_sources: dict[str, str], *, verbose: bool = True
 ) -> dict[str, str]:
@@ -235,9 +261,7 @@ def run_studio(episode: Path) -> None:
     if not (kit / "package.json").is_file():
         raise FileNotFoundError(f"Remotion kit missing at {kit}")
     cmd = [
-        "pnpm",
-        "exec",
-        "remotion",
+        *_remotion_cli(kit),
         "studio",
         "src/index.ts",
         "--props",
@@ -258,9 +282,7 @@ def render_compose(episode: Path, *, output: Path | None = None) -> Path:
     env["AE_TIMELINE_PROPS"] = str(props)
     env["AE_EPISODE"] = str(episode.resolve())
     cmd = [
-        "pnpm",
-        "exec",
-        "remotion",
+        *_remotion_cli(kit),
         "render",
         "src/index.ts",
         "AgenticTimeline",
@@ -274,4 +296,8 @@ def render_compose(episode: Path, *, output: Path | None = None) -> Path:
 
 
 def npx_available() -> bool:
-    return shutil.which("pnpm") is not None or shutil.which("npx") is not None
+    try:
+        _pnpm_cmd()
+        return True
+    except FileNotFoundError:
+        return shutil.which("npx") is not None

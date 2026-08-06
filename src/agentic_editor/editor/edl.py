@@ -34,15 +34,20 @@ def snap_range_to_words(
     *,
     pad_before: float = 0.05,
     pad_after: float = 0.08,
+    hold_tail: bool = False,
 ) -> tuple[float, float]:
-    """Snap cut edges to nearest word boundaries and apply padding."""
+    """Snap cut edges to nearest word boundaries and apply padding.
+
+    ``hold_tail=True`` preserves an intentional non-speech end (AI wait beat).
+    Only the start is speech-snapped; ``end`` is kept so the beat survives.
+    """
     word_tokens = [
         w
         for w in words
         if w.get("type", "word") == "word" and w.get("start") is not None
     ]
     if not word_tokens:
-        return max(0.0, start - pad_before), end + pad_after
+        return max(0.0, start - pad_before), end + (0.0 if hold_tail else pad_after)
 
     # find first word overlapping/after start
     first = None
@@ -56,12 +61,16 @@ def snap_range_to_words(
             last = w
             break
     if first is None or last is None:
-        return max(0.0, start - pad_before), end + pad_after
+        return max(0.0, start - pad_before), end + (0.0 if hold_tail else pad_after)
 
     snapped_start = max(0.0, float(first["start"]) - pad_before)
-    snapped_end = float(last["end"]) + pad_after
-    if snapped_end <= snapped_start:
-        snapped_end = snapped_start + 0.05
+    if hold_tail:
+        # Keep requested end (wait beat); never pull it back to last word
+        snapped_end = max(float(end), snapped_start + 0.05)
+    else:
+        snapped_end = float(last["end"]) + pad_after
+        if snapped_end <= snapped_start:
+            snapped_end = snapped_start + 0.05
     return snapped_start, snapped_end
 
 

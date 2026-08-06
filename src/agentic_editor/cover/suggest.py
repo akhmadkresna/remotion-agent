@@ -455,24 +455,47 @@ def decide_screen_pip_windows(
                     }
                 )
 
-    # Clip to EDL keep ranges if provided
-    if edl_ranges:
-        clipped: list[dict[str, Any]] = []
-        for c in candidates:
-            for r in edl_ranges:
-                rs, re = float(r["start"]), float(r["end"])
-                s = max(float(c["start"]), rs)
-                e = min(float(c["end"]), re)
-                if e - s >= 0.2:
-                    clipped.append({**c, "start": s, "end": e})
-        candidates = clipped
-
-    # prefer_screen: wider merge fills talk gaps between demo beats
+    # Source-first: merge intent in continuous source time BEFORE the keep mask.
+    # Clipping to EDL early shatters one demo into per-keep shards.
     effective_merge = merge_gap_sec
     if mode_l == "prefer_screen":
         effective_merge = max(merge_gap_sec, merge_gap_sec * 1.25)
 
     merged = _merge_windows(candidates, gap=effective_merge)
+
+    # Project through EDL keep mask, but stitch shards that belong to the same
+    # source-time intent (demo continuity across radio-edit holes).
+    if edl_ranges:
+        projected: list[dict[str, Any]] = []
+        keeps = sorted(
+            (
+                (float(r["start"]), float(r["end"]))
+                for r in edl_ranges
+                if str(r.get("source") or "cam") == "cam"
+            ),
+            key=lambda x: x[0],
+        )
+        for c in merged:
+            cs, ce = float(c["start"]), float(c["end"])
+            slices: list[tuple[float, float]] = []
+            for rs, re in keeps:
+                s = max(cs, rs)
+                e = min(ce, re)
+                if e - s >= 0.2:
+                    slices.append((s, e))
+            if not slices:
+                continue
+            # Stitch: one screen event per intent, spanning keep slices
+            # (source start/end = first/last overlapping keep inside intent)
+            projected.append(
+                {
+                    **c,
+                    "start": slices[0][0],
+                    "end": slices[-1][1],
+                    "_slices": slices,
+                }
+            )
+        merged = projected
 
     # Enforce min hold + snap to words
     out: list[dict[str, Any]] = []
@@ -566,6 +589,22 @@ def suggest_cover(
             fps=float(cover_cfg.get("activity_fps", 2)),
             threshold=float(cover_cfg.get("activity_threshold", 0.035)),
         )
+        # Persist for gap-class wait detection (ae edl-suggest)
+        try:
+            (edit / "screen_activity.json").write_text(
+                json.dumps(
+                    {
+                        "fps": float(cover_cfg.get("activity_fps", 2)),
+                        "threshold": float(cover_cfg.get("activity_threshold", 0.035)),
+                        "bins": bins,
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
 
     edl_ranges: list[dict[str, Any]] | None = None
     edl_path = edit / "edl.json"

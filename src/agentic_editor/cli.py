@@ -271,10 +271,14 @@ def cmd_edl_suggest(args: argparse.Namespace) -> int:
     out = write_edl_suggest(episode, suggestion)
     meta = suggestion.get("_meta") or {}
     ranges = suggestion.get("ranges") or []
+    gclass = meta.get("gap_classes") or {}
     print(
         f"Wrote {out.relative_to(episode)} "
         f"({len(ranges)} ranges, keep={meta.get('keep_sec', 0):.1f}s; "
-        f"gap_cut={meta.get('gap_cut_sec')}, hold_if={meta.get('hold_if_gap_sec')}→{meta.get('hold_sec')}s; "
+        f"strategy={meta.get('strategy')}, unit={meta.get('unit')}; "
+        f"wait_min={meta.get('wait_min_sec')}, hold={meta.get('hold_sec')}s; "
+        f"classes breath={gclass.get('breath', 0)} think={gclass.get('think', 0)} "
+        f"ai_wait={gclass.get('ai_wait', 0)}; "
         f"drop_repeat={meta.get('dropped_repeat', 0)}, "
         f"wait_clamp={meta.get('clamped_wait', 0)}/{meta.get('dropped_wait', 0)})"
     )

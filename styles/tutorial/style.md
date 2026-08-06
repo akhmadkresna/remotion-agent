@@ -67,23 +67,25 @@ camera_play:
     wide: 1.0
     medium: 1.22
     close: 1.42
-# Silence-cut radio-edit (ae edl-suggest). Clean speech + short AI waits.
-# gap_cut ~1.5 keeps mid-thought breaths; bridge stitches gaps ≤2.2s.
+# Smart radio-edit (ae edl-suggest): clause + gap-class — NOT silence packing.
+# breath/think pauses stay; only long AI waits compress to a hold beat.
 radio_edit:
-  silence_gap_sec: 0.60     # pack sentence-ish phrases
-  gap_cut_sec: 1.50         # do NOT shred mid-sentence breaths
-  hold_if_gap_sec: 5.0      # AI/screen wait → keep only a beat
-  hold_sec: 1.0             # short beat, not full spinner
+  breath_max_sec: 1.2
+  wait_min_sec: 5.0         # gaps ≥ this → AI wait compress
+  activity_wait_min_sec: 3.5
+  hold_sec: 1.0             # visible beat (hold_tail survives word-snap)
   min_keep_sec: 0.90
   pad_before_sec: 0.08
   pad_after_sec: 0.12
   cut_repeats: true
-  repeat_similarity: 0.72   # Jaccard + containment
-  repeat_window_sec: 60
-  bridge_gap_sec: 2.2       # always stitch short gaps (breath / mid-thought)
-  bridge_similarity: 0.55
-  cut_wait_speech: true     # short "tunggu/sebentar/loading" only
+  repeat_similarity: 0.75
+  repeat_window_sec: 90
+  cut_wait_speech: true
   wait_speech_max_sec: 0.9
+  # legacy aliases (mapped to wait_min if new keys absent)
+  silence_gap_sec: 0.60
+  gap_cut_sec: 5.0
+  hold_if_gap_sec: 5.0
 cover:
   # Show screen when possible (tutorial default). Use mode: balanced for stricter gates.
   mode: prefer_screen

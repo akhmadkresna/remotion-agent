@@ -28,6 +28,18 @@ CHAPTER_NOTE_RE = re.compile(
 )
 DIAGRAM_NOTE_RE = re.compile(r"(pipeline|flow|step|langkah|fase|phase|alur)", re.I)
 
+# Speech-native section cues (do NOT require hand-annotated EDL notes)
+SECTION_CUE_RE = re.compile(
+    r"(?i)\b("
+    r"sekarang|lanjut(kan)?|selanjutnya|fase|phase|bab|step|langkah|"
+    r"pertama|kedua|ketiga|keempat|"
+    r"master data|roadmap|kartu stok|kartu stock|"
+    r"pembelian|produk|gambar|dari scratch|one app|satu app|"
+    r"selesai|next|penjualan|outro"
+    r")\b"
+)
+SECTION_QUOTA_SOURCE_SEC = 45.0  # after cover stitch, source windows are longer
+
 SCREEN_EVENT_TYPES = frozenset(
     {"screen_with_cam", "cam_pip", "screen", "screen_full"}
 )
@@ -135,6 +147,70 @@ NOTE_LABEL_RULES: list[tuple[re.Pattern[str], str]] = [
 
 def _norm_token(text: str) -> str:
     return re.sub(r"[^\w]+", "", text.lower(), flags=re.UNICODE)
+
+
+def find_section_candidates(
+    words: list[dict[str, Any]],
+    ranges: list[dict[str, Any]],
+    screen_wins: list[tuple[float, float]],
+    *,
+    min_gap: float = CHAPTER_MIN_GAP,
+) -> list[dict[str, Any]]:
+    """Section heads from transcript cues + screen enters — not EDL notes."""
+    if not words:
+        return []
+    candidates: list[dict[str, Any]] = []
+    # 1) Lexical section cues in speech (keep-masked)
+    for i, w in enumerate(words):
+        try:
+            s = float(w["start"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not _in_edl(ranges, s, s + 0.2):
+            continue
+        window = " ".join(
+            str(words[j].get("text") or "")
+            for j in range(i, min(i + 6, len(words)))
+        )
+        m = SECTION_CUE_RE.search(window)
+        if not m:
+            continue
+        label = short_label(m.group(0), fallback=m.group(0).title())
+        # Prefer payoff label if nearby
+        for hit in find_payoff_hits(words[i : i + 12]):
+            label = str(hit.get("text") or label)
+            break
+        candidates.append(
+            {
+                "start": s,
+                "label": label,
+                "score": 2.0 + (1.5 if is_mostly_screen(s, s + 3.0, screen_wins) else 0.0),
+                "source": "speech_cue",
+            }
+        )
+    # 2) Screen-enter after a stretch of full-cam (UI demo begins)
+    last_cam_end = 0.0
+    for w0, w1 in screen_wins:
+        if w0 - last_cam_end >= 20.0 and _in_edl(ranges, w0, w0 + 1.0):
+            note = _note_for_window(ranges, w0, w1)
+            candidates.append(
+                {
+                    "start": w0,
+                    "label": short_label(note, fallback="Demo"),
+                    "score": 3.0,
+                    "source": "screen_enter",
+                }
+            )
+        last_cam_end = w1
+
+    candidates.sort(key=lambda c: (-float(c["score"]), float(c["start"])))
+    picked: list[dict[str, Any]] = []
+    for c in candidates:
+        if not min_gap_ok(float(c["start"]), [(p["start"], p["start"] + 1) for p in picked], min_gap=min_gap):
+            continue
+        picked.append(c)
+        picked.sort(key=lambda x: float(x["start"]))
+    return picked
 
 
 def short_label(note: str, *, fallback: str | None = None) -> str:
@@ -604,8 +680,33 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
             structural=True,
         )
 
-    # 2) Chapters from EDL notes (curated labels + gap)
+    # 2) Chapters from speech cues / screen enters (primary — not EDL notes)
     chapter_i = 0
+    for sec in find_section_candidates(
+        words, ranges, screen_wins, min_gap=CHAPTER_MIN_GAP
+    ):
+        if kind_count("chapter") >= caps["chapter"]:
+            break
+        rs = float(sec["start"])
+        end = rs + chapter_hold
+        if words:
+            rs, end = snap_window_to_words(rs, end, words)
+        chapter_i += 1
+        if not try_add(
+            {
+                "id": f"chapter-{chapter_i:02d}",
+                "kind": "chapter",
+                "start": rs,
+                "end": max(rs + 1.2, end),
+                "kicker": f"Bab {chapter_i:02d}",
+                "text": str(sec.get("label") or "Section"),
+                "note": f"section:{sec.get('source')}",
+            },
+            structural=True,
+        ):
+            chapter_i -= 1
+
+    # 2b) Optional boost from EDL notes when present (legacy / agent tags)
     for r in ranges:
         if kind_count("chapter") >= caps["chapter"]:
             break
@@ -613,19 +714,13 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
         if not note or not CHAPTER_NOTE_RE.search(note):
             continue
         rs, r_end = float(r["start"]), float(r["end"])
+        if not min_gap_ok(rs, chapter_spans, min_gap=CHAPTER_MIN_GAP):
+            continue
         end = min(r_end, rs + chapter_hold)
         if words:
             rs, end = snap_window_to_words(rs, end, words)
-        if screen_wins and not is_mostly_screen(rs, end, screen_wins):
-            for w0, w1 in screen_wins:
-                if overlap_sec(rs, r_end, w0, w1) >= chapter_hold * 0.8:
-                    rs = max(rs, w0)
-                    end = min(w1, rs + chapter_hold)
-                    if words:
-                        rs, end = snap_window_to_words(rs, end, words)
-                    break
-        chapter_i += 1
-        if not try_add(
+        chapter_i = kind_count("chapter") + 1
+        try_add(
             {
                 "id": f"chapter-{chapter_i:02d}",
                 "kind": "chapter",
@@ -636,12 +731,11 @@ def suggest_overlays(episode: Path) -> dict[str, Any]:
                 "note": note,
             },
             structural=True,
-        ):
-            chapter_i -= 1
+        )
 
     # 3) Section quota — long screen windows get entry chapter/chip
     for wi, (w0, w1) in enumerate(screen_wins):
-        if (w1 - w0) < SECTION_QUOTA_SEC:
+        if (w1 - w0) < SECTION_QUOTA_SOURCE_SEC:
             continue
         head_end = min(w1, w0 + chapter_hold)
         if overlaps_any(w0, head_end, used_spans):

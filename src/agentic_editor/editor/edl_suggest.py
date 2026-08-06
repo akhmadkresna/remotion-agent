@@ -1,10 +1,11 @@
-"""Suggest radio-edit EDL from transcript silence gaps + wait/repeat cuts.
+"""Smart radio-edit EDL suggest (clause + gap-class + AV wait compression).
 
-Tutorial defaults balance clean speech with wait trimming:
-  - Cut silences ≥ ``gap_cut_sec`` (~0.7s) — keep breath pauses inside sentences
-  - AI / screen waits ≥ ``hold_if_gap_sec`` collapse to a short beat (``hold_sec``)
-  - Drop near-duplicate / ASR-overlap phrases (Jaccard + containment)
-  - Clamp short wait-filler prompts only (not every word like "proses")
+Architecture (do not regress to silence-as-discourse):
+  1. Build **clauses** from ASR segments (fallback: word phrases)
+  2. Classify each inter-clause gap: breath / think / ai_wait / retake
+  3. breath+think → stay inside the keep (never shred mid-thought)
+  4. ai_wait → compress to a short beat with a **hold tail** (survives snap)
+  5. retake → drop the inferior duplicate clause
 
 Always writes ``edit/edl.suggest.json`` — confirm before ``--apply`` / ``ae cut``.
 """
@@ -20,42 +21,43 @@ import yaml
 
 from agentic_editor.cover.suggest import load_cam_words
 from agentic_editor.editor.edl import snap_range_to_words
+from agentic_editor.editor.gap_class import (
+    DEFAULT_GAP_POLICY,
+    GapClass,
+    GapPolicy,
+    activity_in_gap,
+    classify_gap,
+)
 from agentic_editor.editor.pack import group_into_phrases
 from agentic_editor.paths import framework_home
 from agentic_editor.project import load_project
 
 DEFAULT_RADIO_CFG: dict[str, Any] = {
-    # Pack into sentence-ish phrases (don't split on every breath)
-    "silence_gap_sec": 0.60,
-    # Cut only clear pauses — Indonesian speech often breathes 0.7–1.5s mid-thought
-    "gap_cut_sec": 1.50,
-    # Long idle / AI spinner → short beat only
-    "hold_if_gap_sec": 5.0,
+    # Gap-class policy (primary)
+    "breath_max_sec": 1.2,
+    "wait_min_sec": 5.0,
     "hold_sec": 1.0,
+    "activity_wait_min_sec": 3.5,
+    # Hygiene
     "min_keep_sec": 0.90,
     "pad_before_sec": 0.08,
     "pad_after_sec": 0.12,
     "cut_repeats": True,
-    "repeat_similarity": 0.72,
-    "repeat_window_sec": 60.0,
-    # Always bridge short gaps (breath); similarity used for true repeats
-    "bridge_gap_sec": 2.2,
-    "bridge_similarity": 0.55,
+    "repeat_similarity": 0.75,
+    "repeat_window_sec": 90.0,
     "cut_wait_speech": True,
     "wait_speech_max_sec": 0.9,
+    # Legacy aliases (mapped → gap-class)
+    "silence_gap_sec": 0.60,  # fallback pack only
+    "gap_cut_sec": 5.0,  # treated as wait_min if wait_min unset
+    "hold_if_gap_sec": 5.0,
 }
 
-# Must look like a wait prompt — avoid matching normal sentences
 WAIT_SPEECH_RE = re.compile(
     r"(?i)^(?=.{0,48}$).*\b("
     r"tunggu(\s+(sebentar|dulu|ya|loading))?|"
-    r"sebentar|"
-    r"bentar|"
-    r"please\s+wait|"
-    r"loading|"
-    r"masih\s+(proses|loading|nunggu)|"
-    r"satu\s+detik|"
-    r"moment"
+    r"sebentar|bentar|please\s+wait|loading|"
+    r"masih\s+(proses|loading|nunggu)|satu\s+detik|moment"
     r")\b"
 )
 
@@ -109,7 +111,24 @@ def load_style_radio_config(style_name: str = "tutorial") -> dict[str, Any]:
         for k, v in radio.items():
             if v is not None:
                 cfg[k] = v
+    # Legacy → gap-class
+    if "wait_min_sec" not in (parsed.get("radio_edit") or {}):
+        if radio.get("hold_if_gap_sec") is not None:
+            cfg["wait_min_sec"] = float(radio["hold_if_gap_sec"])
+        elif radio.get("gap_cut_sec") is not None and float(radio["gap_cut_sec"]) >= 3.0:
+            cfg["wait_min_sec"] = float(radio["gap_cut_sec"])
     return cfg
+
+
+def policy_from_radio(radio: dict[str, Any]) -> GapPolicy:
+    return GapPolicy(
+        breath_max=float(radio.get("breath_max_sec", DEFAULT_GAP_POLICY.breath_max)),
+        wait_min=float(radio.get("wait_min_sec", DEFAULT_GAP_POLICY.wait_min)),
+        hold_sec=float(radio.get("hold_sec", DEFAULT_GAP_POLICY.hold_sec)),
+        activity_wait_min=float(
+            radio.get("activity_wait_min_sec", DEFAULT_GAP_POLICY.activity_wait_min)
+        ),
+    )
 
 
 def normalize_phrase(text: str) -> str:
@@ -122,7 +141,6 @@ def normalize_phrase(text: str) -> str:
 
 
 def phrase_similarity(a: str, b: str) -> float:
-    """Jaccard + containment — catches ASR overlap fragments repeating the same line."""
     ta = set(normalize_phrase(a).split())
     tb = set(normalize_phrase(b).split())
     if not ta or not tb:
@@ -134,212 +152,69 @@ def phrase_similarity(a: str, b: str) -> float:
 
 
 def is_wait_speech(text: str) -> bool:
-    """True only for short wait-prompt lines, not normal sentences that mention waiting."""
     raw = (text or "").strip()
     if not raw or not WAIT_SPEECH_RE.search(raw):
         return False
     tokens = [t for t in _TOKEN_RE.findall(raw) if t.lower() not in _FILLER]
-    # Long explanatory sentences that happen to include "sebentar" stay intact
-    if len(tokens) > 8:
-        return False
-    return True
+    return len(tokens) <= 8
 
 
-def _range_text(words: list[dict[str, Any]], start: float, end: float) -> str:
-    parts: list[str] = []
+def load_cam_segments(edit: Path) -> list[dict[str, Any]]:
+    path = edit / "transcripts" / "cam.json"
+    if not path.is_file():
+        return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    segs = data.get("segments") or []
+    out: list[dict[str, Any]] = []
+    for s in segs:
+        if not isinstance(s, dict):
+            continue
+        try:
+            start, end = float(s["start"]), float(s["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        text = str(s.get("text") or "").strip()
+        if end <= start:
+            continue
+        out.append({"start": start, "end": end, "text": text})
+    return out
+
+
+def clauses_from_segments(
+    segments: list[dict[str, Any]],
+    *,
+    source_start: float | None = None,
+    source_end: float | None = None,
+) -> list[dict[str, Any]]:
+    """ASR segments are discourse units — better than silence packing."""
+    clauses: list[dict[str, Any]] = []
+    for seg in segments:
+        s, e = float(seg["start"]), float(seg["end"])
+        if source_start is not None:
+            s = max(s, float(source_start))
+        if source_end is not None:
+            e = min(e, float(source_end))
+        if e - s < 0.12:
+            continue
+        text = str(seg.get("text") or "").strip()
+        if not text and not normalize_phrase(text):
+            # allow through; filter later
+            pass
+        clauses.append({"start": s, "end": e, "text": text, "note": "speech"})
+    return clauses
+
+
+def clauses_from_words(
+    words: list[dict[str, Any]],
+    *,
+    silence_gap_sec: float = 0.6,
+    source_start: float | None = None,
+    source_end: float | None = None,
+) -> list[dict[str, Any]]:
+    pack_words = []
     for w in words:
         try:
             s, e = float(w["start"]), float(w["end"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if e <= start or s >= end:
-            continue
-        t = (w.get("text") or w.get("word") or "").strip()
-        if t:
-            parts.append(t)
-    return " ".join(parts)
-
-
-def _filter_phrases(
-    phrases: list[dict[str, Any]],
-    *,
-    cut_repeats: bool,
-    repeat_similarity: float,
-    repeat_window_sec: float,
-    cut_wait_speech: bool,
-    wait_speech_max_sec: float,
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Drop repeats / clamp wait-filler phrases. Returns (kept, stats)."""
-    kept: list[dict[str, Any]] = []
-    stats = {"dropped_repeat": 0, "clamped_wait": 0, "dropped_wait": 0}
-    for p in phrases:
-        text = str(p.get("text") or "")
-        start = float(p["start"])
-        end = float(p["end"])
-        dur = end - start
-
-        if cut_wait_speech and is_wait_speech(text):
-            if dur <= wait_speech_max_sec * 0.5:
-                stats["dropped_wait"] += 1
-                continue
-            end = start + wait_speech_max_sec
-            p = {**p, "end": end, "note": "wait-clamp"}
-            stats["clamped_wait"] += 1
-
-        if cut_repeats and kept:
-            drop = False
-            for i in range(len(kept) - 1, -1, -1):
-                prev = kept[i]
-                if start - float(prev["end"]) > repeat_window_sec:
-                    break
-                sim = phrase_similarity(text, str(prev.get("text") or ""))
-                if sim < repeat_similarity:
-                    continue
-                prev_dur = float(prev["end"]) - float(prev["start"])
-                cur_dur = end - start
-                # Prefer keeping the longer take when ASR overlaps
-                if cur_dur > prev_dur * 1.25:
-                    kept.pop(i)
-                    stats["dropped_repeat"] += 1
-                    break
-                stats["dropped_repeat"] += 1
-                drop = True
-                break
-            if drop:
-                continue
-
-        kept.append(p)
-    return kept, stats
-
-
-def _coalesce_ranges(
-    ranges: list[dict[str, Any]],
-    words: list[dict[str, Any]],
-    *,
-    bridge_gap_sec: float,
-    bridge_similarity: float,
-    min_keep_sec: float,
-) -> tuple[list[dict[str, Any]], int]:
-    """Merge/drop neighboring keeps that are the same thought / ASR overlap."""
-    if not ranges:
-        return [], 0
-    enriched: list[dict[str, Any]] = []
-    for r in ranges:
-        text = _range_text(words, float(r["start"]), float(r["end"]))
-        enriched.append({**r, "_text": text})
-
-    merged = 0
-    out: list[dict[str, Any]] = []
-    for nxt in enriched:
-        if not out:
-            out.append(nxt)
-            continue
-        cur = out[-1]
-        gap = float(nxt["start"]) - float(cur["end"])
-        sim = phrase_similarity(str(cur.get("_text") or ""), str(nxt.get("_text") or ""))
-        # Short gap = breath / mid-thought — always stitch (do not require text match)
-        if gap <= bridge_gap_sec:
-            cur["end"] = max(float(cur["end"]), float(nxt["end"]))
-            if "wait" in str(nxt.get("note") or "") and "wait" not in str(
-                cur.get("note") or ""
-            ):
-                cur["note"] = "speech+wait-beat"
-            cur["_text"] = _range_text(words, float(cur["start"]), float(cur["end"]))
-            merged += 1
-            continue
-        # Later keep nearly repeats earlier across a medium cut → drop later
-        if gap <= max(bridge_gap_sec * 2, 4.0) and sim >= max(bridge_similarity, 0.70):
-            if (float(nxt["end"]) - float(nxt["start"])) > (
-                float(cur["end"]) - float(cur["start"])
-            ) * 1.15:
-                out[-1] = {
-                    **nxt,
-                    "start": float(cur["start"]),
-                    "end": float(nxt["end"]),
-                    "_text": _range_text(words, float(cur["start"]), float(nxt["end"])),
-                }
-            merged += 1
-            continue
-        # Also compare against a few recent keeps (ASR re-says after wait-beat)
-        drop = False
-        for prev in reversed(out[-4:]):
-            if float(nxt["start"]) - float(prev["end"]) > 60.0:
-                break
-            sim2 = phrase_similarity(
-                str(prev.get("_text") or ""), str(nxt.get("_text") or "")
-            )
-            if sim2 >= 0.78:
-                prev_dur = float(prev["end"]) - float(prev["start"])
-                nxt_dur = float(nxt["end"]) - float(nxt["start"])
-                if nxt_dur > prev_dur * 1.2:
-                    prev["end"] = float(nxt["end"])
-                    prev["_text"] = _range_text(
-                        words, float(prev["start"]), float(prev["end"])
-                    )
-                merged += 1
-                drop = True
-                break
-        if drop:
-            continue
-        out.append(nxt)
-
-    cleaned = []
-    for r in out:
-        r = dict(r)
-        text = str(r.pop("_text", "") or "")
-        # Drop orphan filler-only fragments ("Nah,", "Oke.") 
-        content_tokens = normalize_phrase(text).split()
-        if not content_tokens:
-            merged += 1
-            continue
-        if float(r["end"]) - float(r["start"]) >= min_keep_sec:
-            cleaned.append(
-                {
-                    **r,
-                    "start": round(float(r["start"]), 3),
-                    "end": round(float(r["end"]), 3),
-                }
-            )
-    return cleaned, merged
-
-
-def suggest_edl_from_words(
-    words: list[dict[str, Any]],
-    *,
-    source: str = "cam",
-    sources: dict[str, str] | None = None,
-    gap_cut_sec: float = 1.50,
-    hold_if_gap_sec: float = 5.0,
-    hold_sec: float = 1.0,
-    min_keep_sec: float = 0.90,
-    pad_before_sec: float = 0.08,
-    pad_after_sec: float = 0.12,
-    source_start: float | None = None,
-    source_end: float | None = None,
-    snap: bool = True,
-    silence_gap_sec: float | None = None,
-    cut_repeats: bool = True,
-    repeat_similarity: float = 0.72,
-    repeat_window_sec: float = 60.0,
-    bridge_gap_sec: float = 2.2,
-    bridge_similarity: float = 0.55,
-    cut_wait_speech: bool = True,
-    wait_speech_max_sec: float = 0.9,
-) -> dict[str, Any]:
-    """
-    Build keep ranges from speech phrases.
-
-    - Gaps in ``[gap_cut_sec, hold_if_gap_sec)`` → hard cut
-    - Gaps ≥ ``hold_if_gap_sec`` → keep only ``hold_sec`` beat (not full wait UI)
-    - Near-duplicate / ASR-overlap phrases → dropped or coalesced
-    - Short wait-prompt speech → clamped / dropped
-    """
-    phrase_gap = float(silence_gap_sec if silence_gap_sec is not None else gap_cut_sec)
-    pack_words: list[dict[str, Any]] = []
-    for w in words:
-        try:
-            s = float(w["start"])
-            e = float(w["end"])
         except (KeyError, TypeError, ValueError):
             continue
         pack_words.append(
@@ -351,8 +226,7 @@ def suggest_edl_from_words(
                 "end": e,
             }
         )
-
-    phrases = group_into_phrases(pack_words, silence_threshold=phrase_gap)
+    phrases = group_into_phrases(pack_words, silence_threshold=silence_gap_sec)
     if source_start is not None or source_end is not None:
         s0 = float(source_start if source_start is not None else 0.0)
         s1 = float(source_end) if source_end is not None else float("inf")
@@ -361,9 +235,134 @@ def suggest_edl_from_words(
             for p in phrases
             if min(float(p["end"]), s1) - max(float(p["start"]), s0) > 0.05
         ]
+    return [
+        {
+            "start": float(p["start"]),
+            "end": float(p["end"]),
+            "text": str(p.get("text") or ""),
+            "note": "speech",
+        }
+        for p in phrases
+    ]
 
-    phrases, filter_stats = _filter_phrases(
-        phrases,
+
+def _filter_clauses(
+    clauses: list[dict[str, Any]],
+    *,
+    cut_repeats: bool,
+    repeat_similarity: float,
+    repeat_window_sec: float,
+    cut_wait_speech: bool,
+    wait_speech_max_sec: float,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    kept: list[dict[str, Any]] = []
+    stats = {"dropped_repeat": 0, "clamped_wait": 0, "dropped_wait": 0, "dropped_filler": 0}
+    for c in clauses:
+        text = str(c.get("text") or "")
+        start, end = float(c["start"]), float(c["end"])
+        if not normalize_phrase(text):
+            # filler-only segment
+            if end - start < 2.0:
+                stats["dropped_filler"] += 1
+                continue
+        if cut_wait_speech and is_wait_speech(text):
+            if end - start <= wait_speech_max_sec * 0.5:
+                stats["dropped_wait"] += 1
+                continue
+            end = start + wait_speech_max_sec
+            c = {**c, "end": end, "note": "wait-clamp"}
+            stats["clamped_wait"] += 1
+        if cut_repeats and kept:
+            drop = False
+            for i in range(len(kept) - 1, -1, -1):
+                prev = kept[i]
+                if start - float(prev["end"]) > repeat_window_sec:
+                    break
+                sim = phrase_similarity(text, str(prev.get("text") or ""))
+                if sim < repeat_similarity:
+                    continue
+                prev_dur = float(prev["end"]) - float(prev["start"])
+                cur_dur = end - start
+                if cur_dur > prev_dur * 1.25:
+                    kept.pop(i)
+                    stats["dropped_repeat"] += 1
+                    break
+                stats["dropped_repeat"] += 1
+                drop = True
+                break
+            if drop:
+                continue
+        kept.append({**c, "start": start, "end": end})
+    return kept, stats
+
+
+def suggest_edl_from_words(
+    words: list[dict[str, Any]],
+    *,
+    source: str = "cam",
+    sources: dict[str, str] | None = None,
+    segments: list[dict[str, Any]] | None = None,
+    activity_bins: list[dict[str, Any]] | None = None,
+    # Gap-class policy
+    breath_max_sec: float = 1.2,
+    wait_min_sec: float = 5.0,
+    hold_sec: float = 1.0,
+    activity_wait_min_sec: float = 3.5,
+    # Hygiene
+    min_keep_sec: float = 0.90,
+    pad_before_sec: float = 0.08,
+    pad_after_sec: float = 0.12,
+    source_start: float | None = None,
+    source_end: float | None = None,
+    snap: bool = True,
+    cut_repeats: bool = True,
+    repeat_similarity: float = 0.75,
+    repeat_window_sec: float = 90.0,
+    cut_wait_speech: bool = True,
+    wait_speech_max_sec: float = 0.9,
+    silence_gap_sec: float = 0.60,
+    # Legacy kwargs (ignored for cut logic; accepted for API compat)
+    gap_cut_sec: float | None = None,
+    hold_if_gap_sec: float | None = None,
+    bridge_gap_sec: float | None = None,
+    bridge_similarity: float | None = None,
+) -> dict[str, Any]:
+    """
+    Build keep ranges with gap-class logic.
+
+    Invariants:
+      - Never hard-cut a think/breath pause (mid-thought stays)
+      - AI waits compress to ``hold_sec`` with hold_tail (visible beat)
+      - Retakes / near-duplicates dropped
+    """
+    if hold_if_gap_sec is not None and wait_min_sec == 5.0:
+        wait_min_sec = float(hold_if_gap_sec)
+    if gap_cut_sec is not None and float(gap_cut_sec) >= 3.0 and wait_min_sec == 5.0:
+        wait_min_sec = float(gap_cut_sec)
+
+    policy = GapPolicy(
+        breath_max=breath_max_sec,
+        wait_min=wait_min_sec,
+        hold_sec=hold_sec,
+        activity_wait_min=activity_wait_min_sec,
+    )
+
+    if segments:
+        clauses = clauses_from_segments(
+            segments, source_start=source_start, source_end=source_end
+        )
+        unit = "segment"
+    else:
+        clauses = clauses_from_words(
+            words,
+            silence_gap_sec=silence_gap_sec,
+            source_start=source_start,
+            source_end=source_end,
+        )
+        unit = "phrase"
+
+    clauses, filter_stats = _filter_clauses(
+        clauses,
         cut_repeats=cut_repeats,
         repeat_similarity=repeat_similarity,
         repeat_window_sec=repeat_window_sec,
@@ -371,58 +370,71 @@ def suggest_edl_from_words(
         wait_speech_max_sec=wait_speech_max_sec,
     )
 
-    if not phrases:
+    class_counts = {c.value: 0 for c in GapClass}
+    if not clauses:
         return {
             "sources": sources or {source: f"../raw/{source}.mp4"},
             "ranges": [],
             "_meta": {
                 "keep_sec": 0.0,
-                "strategy": "silence-cut+repeat+wait",
+                "strategy": "gap-class+clause",
                 "empty": True,
+                "unit": unit,
+                "gap_classes": class_counts,
                 **filter_stats,
             },
         }
 
     ranges: list[dict[str, Any]] = []
-    cur_start = float(phrases[0]["start"])
-    cur_end = float(phrases[0]["end"])
-    cur_note = str(phrases[0].get("note") or "speech")
+    cur_start = float(clauses[0]["start"])
+    cur_end = float(clauses[0]["end"])
+    cur_note = str(clauses[0].get("note") or "speech")
+    cur_hold_tail = False
 
-    for p in phrases[1:]:
-        nxt_start = float(p["start"])
-        nxt_end = float(p["end"])
+    for nxt in clauses[1:]:
+        nxt_start, nxt_end = float(nxt["start"]), float(nxt["end"])
         gap = nxt_start - cur_end
-        if gap < gap_cut_sec:
+        screen_active = activity_in_gap(activity_bins, cur_end, nxt_start)
+        gclass = classify_gap(
+            gap, policy=policy, screen_active=screen_active, is_retake=False
+        )
+        class_counts[gclass.value] += 1
+
+        if gclass in (GapClass.BREATH, GapClass.THINK):
+            # Keep the pause — natural speech continuity
             cur_end = max(cur_end, nxt_end)
             continue
-        if gap >= hold_if_gap_sec:
-            hold_end = min(nxt_start, cur_end + hold_sec)
-            if hold_end > cur_end + 0.05:
-                cur_end = hold_end
-                cur_note = "speech+wait-beat"
-            ranges.append(
-                {
-                    "source": source,
-                    "start": cur_start,
-                    "end": cur_end,
-                    "note": cur_note,
-                }
-            )
-            cur_start, cur_end = nxt_start, nxt_end
-            cur_note = str(p.get("note") or "speech")
+
+        if gclass == GapClass.RETAKE:
             continue
+
+        # AI_WAIT → compress: keep short beat after last speech, then jump
+        hold_end = min(nxt_start, cur_end + policy.hold_sec)
+        if hold_end > cur_end + 0.05:
+            cur_end = hold_end
+            cur_note = "speech+wait-beat"
+            cur_hold_tail = True
         ranges.append(
             {
                 "source": source,
                 "start": cur_start,
                 "end": cur_end,
                 "note": cur_note,
+                "_hold_tail": cur_hold_tail,
             }
         )
         cur_start, cur_end = nxt_start, nxt_end
-        cur_note = str(p.get("note") or "speech")
+        cur_note = str(nxt.get("note") or "speech")
+        cur_hold_tail = False
+
     ranges.append(
-        {"source": source, "start": cur_start, "end": cur_end, "note": cur_note}
+        {
+            "source": source,
+            "start": cur_start,
+            "end": cur_end,
+            "note": cur_note,
+            "_hold_tail": cur_hold_tail,
+        }
     )
 
     word_dicts = [
@@ -436,28 +448,38 @@ def suggest_edl_from_words(
         for w in words
         if w.get("start") is not None and w.get("end") is not None
     ]
+
     cleaned: list[dict[str, Any]] = []
     for r in ranges:
         s, e = float(r["start"]), float(r["end"])
+        hold_tail = bool(r.pop("_hold_tail", False))
+        desired_end = e
         if snap and word_dicts:
             s, e = snap_range_to_words(
-                s, e, word_dicts, pad_before=pad_before_sec, pad_after=pad_after_sec
+                s,
+                e,
+                word_dicts,
+                pad_before=pad_before_sec,
+                pad_after=pad_after_sec,
+                hold_tail=hold_tail,
             )
+            if hold_tail:
+                # Guarantee visible beat even if snap pulled speech end back
+                e = max(e, min(desired_end, s + min_keep_sec), desired_end)
         if source_start is not None:
             s = max(s, float(source_start))
         if source_end is not None:
             e = min(e, float(source_end))
         if e - s < min_keep_sec:
             continue
-        cleaned.append({**r, "start": round(s, 3), "end": round(e, 3)})
-
-    cleaned, bridged = _coalesce_ranges(
-        cleaned,
-        word_dicts,
-        bridge_gap_sec=bridge_gap_sec,
-        bridge_similarity=bridge_similarity,
-        min_keep_sec=min_keep_sec,
-    )
+        cleaned.append(
+            {
+                "source": source,
+                "start": round(s, 3),
+                "end": round(e, 3),
+                "note": r.get("note") or "speech",
+            }
+        )
 
     keep = sum(float(r["end"]) - float(r["start"]) for r in cleaned)
     return {
@@ -465,10 +487,14 @@ def suggest_edl_from_words(
         "ranges": cleaned,
         "grade": None,
         "_meta": {
-            "strategy": "silence-cut+repeat+wait",
-            "gap_cut_sec": gap_cut_sec,
-            "hold_if_gap_sec": hold_if_gap_sec,
-            "hold_sec": hold_sec,
+            "strategy": "gap-class+clause",
+            "unit": unit,
+            "breath_max_sec": policy.breath_max,
+            "wait_min_sec": policy.wait_min,
+            "hold_sec": policy.hold_sec,
+            # Compat fields for CLI printouts
+            "gap_cut_sec": policy.wait_min,
+            "hold_if_gap_sec": policy.wait_min,
             "min_keep_sec": min_keep_sec,
             "source_start": source_start,
             "source_end": source_end,
@@ -476,7 +502,7 @@ def suggest_edl_from_words(
             "range_count": len(cleaned),
             "cut_repeats": cut_repeats,
             "cut_wait_speech": cut_wait_speech,
-            "bridged_ranges": bridged,
+            "gap_classes": class_counts,
             **filter_stats,
         },
     }
@@ -496,10 +522,10 @@ def suggest_edl(
     cfg = load_project(episode)
     style = str(cfg.get("style") or "tutorial")
     radio = load_style_radio_config(style)
-    if gap_cut_sec is not None:
-        radio["gap_cut_sec"] = float(gap_cut_sec)
     if hold_if_gap_sec is not None:
-        radio["hold_if_gap_sec"] = float(hold_if_gap_sec)
+        radio["wait_min_sec"] = float(hold_if_gap_sec)
+    if gap_cut_sec is not None and float(gap_cut_sec) >= 3.0:
+        radio["wait_min_sec"] = float(gap_cut_sec)
     if hold_sec is not None:
         radio["hold_sec"] = float(hold_sec)
     if min_keep_sec is not None:
@@ -507,6 +533,17 @@ def suggest_edl(
 
     edit = episode / "edit"
     words = load_cam_words(edit)
+    segments = load_cam_segments(edit)
+
+    # Optional activity bins for smarter wait detection
+    activity_bins = None
+    act_path = edit / "screen_activity.json"
+    if act_path.is_file():
+        try:
+            activity_bins = json.loads(act_path.read_text(encoding="utf-8")).get("bins")
+        except (OSError, json.JSONDecodeError):
+            activity_bins = None
+
     sources_cfg = cfg.get("sources") or {}
     edl_sources: dict[str, str] = {}
     for name, rel in sources_cfg.items():
@@ -521,20 +558,21 @@ def suggest_edl(
         words,
         source=source,
         sources=edl_sources or {"cam": "../raw/cam.mp4"},
-        gap_cut_sec=float(radio["gap_cut_sec"]),
-        hold_if_gap_sec=float(radio["hold_if_gap_sec"]),
+        segments=segments or None,
+        activity_bins=activity_bins,
+        breath_max_sec=float(radio.get("breath_max_sec", 1.2)),
+        wait_min_sec=float(radio.get("wait_min_sec", 5.0)),
         hold_sec=float(radio["hold_sec"]),
+        activity_wait_min_sec=float(radio.get("activity_wait_min_sec", 3.5)),
         min_keep_sec=float(radio["min_keep_sec"]),
         pad_before_sec=float(radio["pad_before_sec"]),
         pad_after_sec=float(radio["pad_after_sec"]),
         source_start=source_start,
         source_end=source_end,
-        silence_gap_sec=float(radio.get("silence_gap_sec", radio["gap_cut_sec"])),
+        silence_gap_sec=float(radio.get("silence_gap_sec", 0.6)),
         cut_repeats=bool(radio.get("cut_repeats", True)),
-        repeat_similarity=float(radio.get("repeat_similarity", 0.72)),
-        repeat_window_sec=float(radio.get("repeat_window_sec", 60.0)),
-        bridge_gap_sec=float(radio.get("bridge_gap_sec", 2.5)),
-        bridge_similarity=float(radio.get("bridge_similarity", 0.55)),
+        repeat_similarity=float(radio.get("repeat_similarity", 0.75)),
+        repeat_window_sec=float(radio.get("repeat_window_sec", 90.0)),
         cut_wait_speech=bool(radio.get("cut_wait_speech", True)),
         wait_speech_max_sec=float(radio.get("wait_speech_max_sec", radio["hold_sec"])),
     )
@@ -543,21 +581,18 @@ def suggest_edl(
     meta["radio_config"] = {
         k: radio[k]
         for k in (
-            "gap_cut_sec",
-            "hold_if_gap_sec",
+            "breath_max_sec",
+            "wait_min_sec",
             "hold_sec",
+            "activity_wait_min_sec",
             "min_keep_sec",
-            "silence_gap_sec",
             "cut_repeats",
             "cut_wait_speech",
-            "wait_speech_max_sec",
-            "bridge_gap_sec",
-            "bridge_similarity",
-            "repeat_similarity",
         )
         if k in radio
     }
     meta["word_count"] = len(words)
+    meta["segment_count"] = len(segments)
     return suggestion
 
 

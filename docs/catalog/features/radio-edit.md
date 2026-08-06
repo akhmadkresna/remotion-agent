@@ -1,49 +1,54 @@
-# Radio edit
+# Radio edit (gap-class)
 
 ## Entry points
 
 - CLI: `ae edl-suggest`, `ae cut`
-- Suggest: [`src/agentic_editor/editor/edl_suggest.py`](../../src/agentic_editor/editor/edl_suggest.py)
-- Pack: [`src/agentic_editor/editor/pack.py`](../../src/agentic_editor/editor/pack.py)
-- EDL: [`edl.py`](../../src/agentic_editor/editor/edl.py)
-- Render: [`render.py`](../../src/agentic_editor/editor/render.py)
-- Style knobs: `radio_edit.*` in [`styles/tutorial/style.md`](../../styles/tutorial/style.md)
+- Core: [`edl_suggest.py`](../../src/agentic_editor/editor/edl_suggest.py)
+- Gap classes: [`gap_class.py`](../../src/agentic_editor/editor/gap_class.py)
+- Style: `radio_edit.*` in [`styles/tutorial/style.md`](../../styles/tutorial/style.md)
 
-## Behavior
+## Architecture (do not regress)
 
-1. `ae edl-suggest .` → `edit/edl.suggest.json` from cam transcript (silence + wait + repeat)
-2. Agent proposes keep length / strategy → **wait for confirm**
-3. `ae edl-suggest . --apply` (or copy) → `edit/edl.json`
-4. `ae cut .` → per-segment extract with 30ms audio fades → `edit/preview.mp4`
+**Silence is not discourse.** The old model packed words by silence and cut every gap ≥ a threshold — that shredded Indonesian talking-head speech (breath / think / stare-at-UI).
 
-### Silence / wait / repeat (tutorial defaults)
+Smart pipeline:
 
-Goal: **clean sentences**, short AI waits — not shredded speech.
+1. **Clauses** from ASR `segments` (fallback: word phrases)
+2. **Classify** each inter-clause gap:
+   - `breath` — keep
+   - `think` — keep (mid-thought / look-at-UI)
+   - `ai_wait` — compress to `hold_sec` beat with **hold_tail** (survives word-snap)
+   - `retake` — drop near-duplicate clause
+3. Snap speech edges; preserve wait-beat tails
+4. Cover projects screen intent in source time, then stitches through the keep mask
+
+### Knobs
 
 | Knob | Default | Meaning |
 |------|---------|---------|
-| `silence_gap_sec` | 0.60 | Pack words into sentence-ish phrases |
-| `gap_cut_sec` | 1.50 | Cut silences ≥ this (keep mid-sentence breaths) |
-| `hold_if_gap_sec` | 5.0 | Longer gaps (AI/screen waits) → short beat only |
-| `hold_sec` | 1.0 | Beat kept when collapsing long gaps |
-| `min_keep_sec` | 0.90 | Drop tiny fragments |
-| `cut_repeats` | true | Drop near-duplicate phrases (Jaccard + containment) |
-| `bridge_gap_sec` | 2.2 | Always stitch short gaps (breath / mid-thought) |
-| `cut_wait_speech` | true | Clamp short wait prompts only |
-| `wait_speech_max_sec` | 0.9 | Max keep for wait-filler speech |
-| pads | 0.08 / 0.12 | Word-boundary snap pads |
+| `wait_min_sec` | 5.0 | Gaps ≥ this compress as AI wait |
+| `breath_max_sec` | 1.2 | Short pause class |
+| `hold_sec` | 1.0 | Visible wait beat (not full spinner) |
+| `activity_wait_min_sec` | 3.5 | Earlier wait if screen busy in gap |
+| `cut_repeats` | true | Drop near-duplicate clauses |
+| `cut_wait_speech` | true | Clamp short wait-prompt lines only |
 
 ```bash
-ae edl-suggest .                          # style radio_edit.* defaults
-ae edl-suggest . --source-end 1887        # CapCut-style source window
-# after confirm:
+ae edl-suggest . --source-end 1887
+# review _meta.gap_classes + keep_sec, then:
 ae edl-suggest . --apply
 ae cut .
 ```
 
+## Invariants (tests)
+
+- Mid-thought pause (~2–4s) stays inside one keep
+- Wait beat end is not pulled back by speech-only snap
+- Near-duplicate clauses → one keep
+- Cover screen intent is continuous across keep holes inside one demo
+
 ## Test
 
 ```bash
-uv run pytest tests/test_prefer_screen_edl.py -q
-uv run ae edl-suggest /path/to/episode
+uv run pytest tests/test_prefer_screen_edl.py tests/test_gap_class.py -q
 ```

@@ -287,9 +287,9 @@ def _coalesce_ranges(
     for r in out:
         r = dict(r)
         text = str(r.pop("_text", "") or "")
-        # Drop orphan filler fragments ("Nah,", "Oke.") that survive min_keep
+        # Drop orphan filler-only fragments ("Nah,", "Oke.") 
         content_tokens = normalize_phrase(text).split()
-        if len(content_tokens) < 2 and float(r["end"]) - float(r["start"]) < 2.5:
+        if not content_tokens:
             merged += 1
             continue
         if float(r["end"]) - float(r["start"]) >= min_keep_sec:

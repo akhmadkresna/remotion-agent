@@ -1,12 +1,10 @@
 """Gap classification for smart radio-edit.
 
 Silence is NOT discourse. Gaps are classified so we:
-  - keep breath / think pauses inside a keep (natural speech)
+  - keep short breath pauses inside a keep
+  - hard-cut think / mid pauses (tighter pacing)
   - compress long AI / UI waits to a short beat
   - drop retakes / near-duplicate clauses
-
-This replaces the old one-threshold silence cutter that shredded Indonesian
-talking-head tutorials.
 """
 
 from __future__ import annotations
@@ -17,8 +15,8 @@ from typing import Any
 
 
 class GapClass(str, Enum):
-    BREATH = "breath"  # short pause — always keep
-    THINK = "think"  # mid-thought / look-at-UI — keep (do not shred)
+    BREATH = "breath"  # short pause — keep
+    THINK = "think"  # mid pause — hard-cut (no hold)
     AI_WAIT = "ai_wait"  # long idle — compress to a beat
     RETAKE = "retake"  # near-duplicate clause — drop later
 
@@ -27,10 +25,10 @@ class GapClass(str, Enum):
 class GapPolicy:
     """Style-tunable thresholds (seconds)."""
 
-    breath_max: float = 1.2
-    # Anything below wait_min that isn't a retake stays in the keep
+    breath_max: float = 0.6
+    # Gaps below wait_min that aren't breath/retake are think (hard-cut)
     wait_min: float = 5.0
-    hold_sec: float = 1.0
+    hold_sec: float = 0.4
     # Optional: if screen activity is available, boost wait detection
     activity_wait_min: float = 3.5
 
@@ -58,7 +56,7 @@ def classify_gap(
         wait_floor = min(policy.wait_min, policy.activity_wait_min)
     if gap >= wait_floor:
         return GapClass.AI_WAIT
-    # Mid pauses are think/look — keep them. This is the shredding fix.
+    # Mid pauses are think — hard-cut by edl_suggest (not merged into keep).
     return GapClass.THINK
 
 

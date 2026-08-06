@@ -405,7 +405,102 @@ def run_studio(episode: Path) -> None:
     subprocess.run(cmd, cwd=str(kit), env=env, check=True)
 
 
-def render_compose(episode: Path, *, output: Path | None = None) -> Path:
+def find_nvenc_ffmpeg_bin_dir() -> Path | None:
+    """Directory containing an ffmpeg.exe that lists h264_nvenc (Windows/Linux)."""
+    candidates: list[Path] = []
+    which = shutil.which("ffmpeg")
+    if which:
+        candidates.append(Path(which).resolve().parent)
+    # Common WinGet full_build (has NVENC); Remotion's bundled ffmpeg often does not
+    local = os.environ.get("LOCALAPPDATA") or ""
+    if local:
+        winget = Path(local) / "Microsoft" / "WinGet" / "Packages"
+        if winget.is_dir():
+            candidates.extend(winget.glob("Gyan.FFmpeg*/ffmpeg-*-full_build/bin"))
+    env_bin = os.environ.get("AE_FFMPEG_BIN_DIR") or os.environ.get("REMOTION_FFMPEG_BINARIES")
+    if env_bin:
+        candidates.insert(0, Path(env_bin))
+
+    seen: set[Path] = set()
+    for d in candidates:
+        try:
+            d = d.resolve()
+        except OSError:
+            continue
+        if d in seen or not d.is_dir():
+            continue
+        seen.add(d)
+        exe = d / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+        if not exe.is_file():
+            continue
+        try:
+            proc = subprocess.run(
+                [str(exe), "-hide_banner", "-encoders"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        blob = (proc.stdout or "") + (proc.stderr or "")
+        if "h264_nvenc" in blob:
+            return d
+    return None
+
+
+def remotion_render_accel_args(
+    *,
+    nvenc: bool = False,
+    gl: str | None = None,
+    verbose: bool = True,
+) -> list[str]:
+    """Extra ``remotion render`` flags for GPU encode / Chrome GL.
+
+    NVENC only speeds *encoding*. Frame render still runs in Chrome; ``--gl``
+    can help that path on NVIDIA machines (``angle`` is the usual Windows pick).
+    """
+    args: list[str] = []
+    if gl:
+        args.extend(["--gl", str(gl)])
+    if not nvenc:
+        return args
+
+    bin_dir = find_nvenc_ffmpeg_bin_dir()
+    if bin_dir is None:
+        if verbose:
+            print(
+                "• NVENC requested but no h264_nvenc ffmpeg found — "
+                "install Gyan full FFmpeg or set AE_FFMPEG_BIN_DIR; "
+                "falling back to software encode"
+            )
+        return args
+
+    # Remotion: hardwareAcceleration + binariesDirectory (Windows needs external ffmpeg)
+    args.extend(
+        [
+            "--hardware-acceleration",
+            "if-possible",
+            "--binaries-directory",
+            str(bin_dir),
+            # CRF incompatible with NVENC — bitrate mode
+            "--video-bitrate",
+            "8M",
+        ]
+    )
+    if verbose:
+        print(f"• NVENC: ffmpeg binaries → {bin_dir}")
+        print("• Remotion --hardware-acceleration if-possible (--video-bitrate 8M)")
+    return args
+
+
+def render_compose(
+    episode: Path,
+    *,
+    output: Path | None = None,
+    nvenc: bool = False,
+    gl: str | None = None,
+) -> Path:
     prepare_compose(episode)
     kit = remotion_kit_dir()
     props = episode / "edit" / "remotion-props.json"
@@ -414,6 +509,7 @@ def render_compose(episode: Path, *, output: Path | None = None) -> Path:
     env = os.environ.copy()
     env["AE_TIMELINE_PROPS"] = str(props)
     env["AE_EPISODE"] = str(episode.resolve())
+    accel = remotion_render_accel_args(nvenc=nvenc, gl=gl)
     cmd = [
         *_remotion_cli(kit),
         "render",
@@ -422,6 +518,7 @@ def render_compose(episode: Path, *, output: Path | None = None) -> Path:
         str(out),
         "--props",
         str(props),
+        *accel,
     ]
     print(f"$ cd {kit} && {' '.join(cmd)}")
     subprocess.run(cmd, cwd=str(kit), env=env, check=True)
@@ -435,6 +532,8 @@ def render_draft(
     output: Path | None = None,
     jpeg_quality: int = 70,
     verbose: bool = True,
+    nvenc: bool = False,
+    gl: str | None = None,
 ) -> Path:
     """Render the first ``limit_sec`` seconds using a fromSec-safe draft slice."""
     props = prepare_draft(episode, limit_sec=limit_sec, verbose=verbose)
@@ -451,6 +550,7 @@ def render_draft(
     env = os.environ.copy()
     env["AE_TIMELINE_PROPS"] = str(props)
     env["AE_EPISODE"] = str(episode.resolve())
+    accel = remotion_render_accel_args(nvenc=nvenc, gl=gl, verbose=verbose)
     cmd = [
         *_remotion_cli(kit),
         "render",
@@ -461,6 +561,7 @@ def render_draft(
         str(props),
         f"--frames=0-{last_frame}",
         f"--jpeg-quality={int(jpeg_quality)}",
+        *accel,
     ]
     print(f"$ cd {kit} && {' '.join(cmd)}")
     subprocess.run(cmd, cwd=str(kit), env=env, check=True)

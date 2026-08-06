@@ -7,16 +7,16 @@
 - Gap classes: [`gap_class.py`](../../src/agentic_editor/editor/gap_class.py)
 - Style: `radio_edit.*` in [`styles/tutorial/style.md`](../../styles/tutorial/style.md)
 
-## Architecture (do not regress)
+## Architecture
 
-**Silence is not discourse.** The old model packed words by silence and cut every gap ≥ a threshold — that shredded Indonesian talking-head speech (breath / think / stare-at-UI).
+**Silence is not discourse.** Gaps are classified from ASR clauses (not a single silence threshold that shreds Indonesian talking-head speech).
 
 Smart pipeline:
 
 1. **Clauses** from ASR `segments` (fallback: word phrases)
 2. **Classify** each inter-clause gap:
-   - `breath` — keep
-   - `think` — keep (mid-thought / look-at-UI)
+   - `breath` — keep (short natural pause)
+   - `think` — **hard cut** (no hold beat) for tight pacing
    - `ai_wait` — compress to `hold_sec` beat with **hold_tail** (survives word-snap)
    - `retake` — drop near-duplicate clause
 3. Snap speech edges; preserve wait-beat tails
@@ -27,8 +27,8 @@ Smart pipeline:
 | Knob | Default | Meaning |
 |------|---------|---------|
 | `wait_min_sec` | 5.0 | Gaps ≥ this compress as AI wait |
-| `breath_max_sec` | 1.2 | Short pause class |
-| `hold_sec` | 1.0 | Visible wait beat (not full spinner) |
+| `breath_max_sec` | 0.6 | Short pause class (kept) |
+| `hold_sec` | 0.4 | Visible wait beat (not full spinner) |
 | `activity_wait_min_sec` | 3.5 | Earlier wait if screen busy in gap |
 | `cut_repeats` | true | Drop near-duplicate clauses |
 | `cut_wait_speech` | true | Clamp short wait-prompt lines only |
@@ -42,7 +42,7 @@ ae cut .
 
 ## Invariants (tests)
 
-- Mid-thought pause (~2–4s) stays inside one keep
+- Mid pause (~1–4s think) hard-cuts into separate keeps
 - Wait beat end is not pulled back by speech-only snap
 - Near-duplicate clauses → one keep
 - Cover screen intent is continuous across keep holes inside one demo

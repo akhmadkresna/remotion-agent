@@ -4,6 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
+# Prefer slices at least this long; sole short slices are still kept.
+_MIN_PREFERRED_SLICE = 0.5
+
+
+def edl_keep_duration_sec(edl: dict[str, Any]) -> float:
+    """Total output duration of all EDL keep ranges."""
+    total = 0.0
+    for r in edl.get("ranges") or []:
+        total += max(0.0, float(r["end"]) - float(r["start"]))
+    return total
+
 
 def remap_source_window(
     edl: dict[str, Any],
@@ -79,45 +90,59 @@ def collect_overlay_defs(cover: dict[str, Any] | None) -> list[dict[str, Any]]:
     return out
 
 
+def _dwell_floor(kind: str) -> float:
+    return {
+        "chip": 4.0,
+        "chapter": 5.0,
+        "diagram": 7.5,
+        "emphasis": 2.4,
+    }.get(kind, 1.8)
+
+
+def _pick_best_slice(slices: list[dict[str, float]]) -> dict[str, float] | None:
+    """One instance per overlay: longest preferred slice; sole short slice kept."""
+    if not slices:
+        return None
+    preferred = [s for s in slices if float(s["durationSec"]) >= _MIN_PREFERRED_SLICE]
+    pool = preferred if preferred else slices
+    return max(pool, key=lambda s: float(s["durationSec"]))
+
+
 def build_timeline_overlays(
     edl: dict[str, Any],
     cover: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     """Expand cover.overlays (source time) into timeline.overlays (output time)."""
+    timeline_dur = edl_keep_duration_sec(edl)
     instances: list[dict[str, Any]] = []
-    for i, ov in enumerate(collect_overlay_defs(cover)):
+    for ov in collect_overlay_defs(cover):
         slices = remap_source_window(
             edl,
             float(ov["start"]),
             float(ov["end"]),
             source=str(ov.get("source") or "cam"),
         )
-        for j, sl in enumerate(slices):
-            if sl["durationSec"] < 0.5:
-                continue
-            kind = str(ov.get("kind") or "")
-            # Readable dwell floor (style overlays.dwell); fade-out in OverlayLayer
-            floor = {
-                "chip": 4.0,
-                "chapter": 5.0,
-                "diagram": 7.5,
-                "emphasis": 2.4,
-            }.get(kind, 1.8)
-            dur = max(float(sl["durationSec"]), floor)
-            inst = {
-                "id": f"{ov['id']}-{j}" if len(slices) > 1 else ov["id"],
-                "kind": ov["kind"],
-                "fromSec": sl["fromSec"],
-                "durationSec": dur,
-                "text": ov.get("text") or "",
-            }
-            if ov.get("kicker"):
-                inst["kicker"] = ov["kicker"]
-            if ov.get("title"):
-                inst["title"] = ov["title"]
-            if ov.get("steps"):
-                inst["steps"] = ov["steps"]
-            if ov.get("note"):
-                inst["note"] = ov["note"]
-            instances.append(inst)
+        sl = _pick_best_slice(slices)
+        if sl is None:
+            continue
+        kind = str(ov.get("kind") or "")
+        floor = _dwell_floor(kind)
+        remaining = max(0.05, timeline_dur - float(sl["fromSec"]))
+        dur = min(max(float(sl["durationSec"]), floor), remaining)
+        inst: dict[str, Any] = {
+            "id": ov["id"],
+            "kind": ov["kind"],
+            "fromSec": sl["fromSec"],
+            "durationSec": dur,
+            "text": ov.get("text") or "",
+        }
+        if ov.get("kicker"):
+            inst["kicker"] = ov["kicker"]
+        if ov.get("title"):
+            inst["title"] = ov["title"]
+        if ov.get("steps"):
+            inst["steps"] = ov["steps"]
+        if ov.get("note"):
+            inst["note"] = ov["note"]
+        instances.append(inst)
     return instances

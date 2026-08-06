@@ -22,6 +22,10 @@ function useStyle(style?: OverlayStyle) {
     ...DEFAULT_OVERLAY_STYLE,
     ...style,
     fonts: { ...DEFAULT_OVERLAY_STYLE.fonts, ...style?.fonts },
+    chapter: { ...DEFAULT_OVERLAY_STYLE.chapter, ...style?.chapter },
+    emphasis: { ...DEFAULT_OVERLAY_STYLE.emphasis, ...style?.emphasis },
+    diagram: { ...DEFAULT_OVERLAY_STYLE.diagram, ...style?.diagram },
+    chip: { ...DEFAULT_OVERLAY_STYLE.chip, ...style?.chip },
   };
 }
 
@@ -62,13 +66,17 @@ const Chapter: React.FC<{
   ov: TimelineOverlay;
   style: ReturnType<typeof useStyle>;
   h: number;
-}> = ({ ov, style, h }) => (
+}> = ({ ov, style, h }) => {
+  const left = style.chapter?.leftCqw ?? 4.5;
+  const top = style.chapter?.topCqh ?? 12;
+  const maxW = style.chapter?.maxWidthCqw ?? 42;
+  return (
   <div
     style={{
       position: "absolute",
-      left: "4.5%",
-      top: "14%",
-      maxWidth: "42%",
+      left: `${left}%`,
+      top: `${top}%`,
+      maxWidth: `${maxW}%`,
       color: style.ink,
       textShadow: "0 8px 28px rgba(0,0,0,0.55)",
     }}
@@ -102,7 +110,8 @@ const Chapter: React.FC<{
       </div>
     </EnterExit>
   </div>
-);
+  );
+};
 
 const Emphasis: React.FC<{
   ov: TimelineOverlay;
@@ -118,12 +127,15 @@ const Emphasis: React.FC<{
   const parts = (ov.text || "").split(/\s+/).filter(Boolean);
   const head = parts.slice(0, -1).join(" ");
   const tail = parts.slice(-1)[0] || ov.text || "";
+  const left = style.emphasis?.leftCqw ?? 4.5;
+  const bottom = style.emphasis?.bottomCqh ?? 28;
+  const sizeCqh = style.emphasis?.sizeCqh ?? 16;
   return (
     <div
       style={{
         position: "absolute",
-        left: "4.5%",
-        bottom: "16%",
+        left: `${left}%`,
+        bottom: `${bottom}%`,
         maxWidth: "55%",
         color: style.ink,
         textShadow: "0 8px 28px rgba(0,0,0,0.55)",
@@ -134,7 +146,7 @@ const Emphasis: React.FC<{
           style={{
             fontFamily: DISPLAY,
             fontWeight: 800,
-            fontSize: Math.round(h * 0.14),
+            fontSize: Math.round(h * (sizeCqh / 100)),
             lineHeight: 0.92,
             letterSpacing: "-0.04em",
           }}
@@ -169,13 +181,16 @@ const Diagram: React.FC<{
   h: number;
 }> = ({ ov, style, h }) => {
   const steps = ov.steps || [];
+  const left = style.diagram?.leftCqw ?? 4.5;
+  const top = style.diagram?.topCqh ?? 10;
+  const maxW = style.diagram?.maxWidthCqw ?? 40;
   return (
     <div
       style={{
         position: "absolute",
-        left: "4.5%",
-        top: "12%",
-        maxWidth: "40%",
+        left: `${left}%`,
+        top: `${top}%`,
+        maxWidth: `${maxW}%`,
         color: style.ink,
         textShadow: "0 8px 24px rgba(0,0,0,0.5)",
       }}
@@ -233,19 +248,23 @@ const Chip: React.FC<{
   ov: TimelineOverlay;
   style: ReturnType<typeof useStyle>;
   h: number;
-}> = ({ ov, style, h }) => (
+}> = ({ ov, style, h }) => {
+  const left = style.chip?.leftCqw ?? 4.5;
+  const top = style.chip?.topCqh ?? 10;
+  const sizeCqh = style.chip?.sizeCqh ?? 3.4;
+  return (
   <div
     style={{
       position: "absolute",
-      left: "4.5%",
-      top: "12%",
+      left: `${left}%`,
+      top: `${top}%`,
       display: "inline-flex",
       alignItems: "center",
       gap: 10,
       color: style.ink,
       fontFamily: UI,
       fontWeight: 600,
-      fontSize: Math.round(h * 0.034),
+      fontSize: Math.round(h * (sizeCqh / 100)),
       textShadow: "0 6px 18px rgba(0,0,0,0.5)",
     }}
   >
@@ -262,7 +281,8 @@ const Chip: React.FC<{
       {ov.text}
     </EnterExit>
   </div>
-);
+  );
+};
 
 const OneOverlay: React.FC<{
   ov: TimelineOverlay;

@@ -231,7 +231,8 @@ export const SourceClip: React.FC<Props> = ({
     if (floatH > maxH) {
       floatH = Math.round(maxH);
     }
-    const radius = screenCfg.borderRadiusPx ?? 12;
+    const radius = screenCfg.borderRadiusPx ?? 24;
+    const fit = (screenCfg.objectFit as string | undefined) ?? "cover";
     return (
       <AbsoluteFill>
         <div
@@ -256,7 +257,7 @@ export const SourceClip: React.FC<Props> = ({
             liveScale={liveScale}
             transformOrigin="center top"
             windowCrop={windowCrop}
-            objectFit="fill"
+            objectFit={fit}
           />
         </div>
       </AbsoluteFill>

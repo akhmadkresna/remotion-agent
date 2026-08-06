@@ -1,4 +1,4 @@
-"""Invariant tests for gap-class radio-edit (not threshold geometry)."""
+"""Invariant tests for gap-class radio-edit (tight pacing: think hard-cut)."""
 
 from __future__ import annotations
 
@@ -7,38 +7,69 @@ from agentic_editor.editor.edl_suggest import suggest_edl_from_words
 from agentic_editor.editor.gap_class import GapClass, GapPolicy, classify_gap
 
 
-def test_classify_think_not_cut():
-    p = GapPolicy(breath_max=1.2, wait_min=5.0, hold_sec=1.0)
+def test_classify_breath_think_ai_wait():
+    p = GapPolicy(breath_max=0.6, wait_min=5.0, hold_sec=0.4)
     assert classify_gap(0.4, policy=p) == GapClass.BREATH
     assert classify_gap(2.5, policy=p) == GapClass.THINK
     assert classify_gap(4.8, policy=p) == GapClass.THINK
     assert classify_gap(6.0, policy=p) == GapClass.AI_WAIT
 
 
-def test_mid_thought_pause_stays_one_keep():
-    """~2.5–4.8s think pauses must not shred a sentence across keeps."""
+def test_pathological_long_segment_split_on_words():
+    """Whisper mega-segment with tiny speech must not keep minutes of silence."""
     segments = [
-        {"start": 0.0, "end": 2.0, "text": "kita akalin itu juga ya"},
-        {"start": 4.5, "end": 8.0, "text": "kita tidak akan menggunakan app standard"},
-        {"start": 20.0, "end": 22.0, "text": "selesai"},
+        {"start": 0.0, "end": 2.0, "text": "halo guys"},
+        # 10 minutes stamped on a 2-word phrase
+        {"start": 10.0, "end": 610.0, "text": "sudah selesai lagi ya"},
+        {"start": 620.0, "end": 622.0, "text": "lanjut"},
     ]
-    words = []
-    for seg in segments:
-        words.append({"text": "x", "start": seg["start"], "end": seg["end"]})
+    words = [
+        {"text": "halo", "start": 0.0, "end": 0.5},
+        {"text": "guys", "start": 0.6, "end": 1.2},
+        {"text": "sudah", "start": 10.0, "end": 10.4},
+        {"text": "selesai", "start": 10.5, "end": 11.0},
+        {"text": "lagi", "start": 11.1, "end": 11.4},
+        {"text": "ya", "start": 11.5, "end": 11.8},
+        {"text": "lanjut", "start": 620.0, "end": 621.5},
+    ]
     edl = suggest_edl_from_words(
         words,
         segments=segments,
+        breath_max_sec=0.6,
         wait_min_sec=5.0,
-        hold_sec=1.0,
+        hold_sec=0.4,
         snap=False,
         cut_repeats=False,
         cut_wait_speech=False,
     )
-    # First two clauses bridged by think pause; long gap before selesai compresses
-    assert len(edl["ranges"]) == 2
-    assert edl["ranges"][0]["end"] >= 8.0
-    assert edl["_meta"]["gap_classes"]["think"] >= 1
-    assert edl["_meta"]["gap_classes"]["ai_wait"] >= 1
+    assert edl["_meta"]["unit"] == "segment+word"
+    assert edl["_meta"].get("segments_split", 0) >= 1
+    keep = sum(float(r["end"]) - float(r["start"]) for r in edl["ranges"])
+    assert keep < 30.0  # not ~612s of silence
+    # No keep should swallow the empty AI wait
+    assert all(float(r["end"]) - float(r["start"]) < 20 for r in edl["ranges"])
+
+
+def test_breath_still_merges():
+    """Sub-breath_max pause stays inside one keep."""
+    segments = [
+        {"start": 0.0, "end": 1.0, "text": "satu"},
+        {"start": 1.4, "end": 2.5, "text": "dua"},
+    ]
+    words = [{"text": "x", "start": s["start"], "end": s["end"]} for s in segments]
+    edl = suggest_edl_from_words(
+        words,
+        segments=segments,
+        breath_max_sec=0.6,
+        wait_min_sec=5.0,
+        hold_sec=0.4,
+        snap=False,
+        cut_repeats=False,
+        cut_wait_speech=False,
+    )
+    assert len(edl["ranges"]) == 1
+    assert edl["ranges"][0]["end"] == 2.5
+    assert edl["_meta"]["gap_classes"]["breath"] >= 1
 
 
 def test_wait_hold_tail_survives_snap():
@@ -58,14 +89,14 @@ def test_wait_hold_tail_survives_snap():
         words,
         segments=segments,
         wait_min_sec=5.0,
-        hold_sec=1.0,
+        hold_sec=0.4,
         snap=True,
         cut_repeats=False,
         cut_wait_speech=False,
     )
     assert len(edl["ranges"]) == 2
-    # First range must extend into the wait (~1s beat), not snap away
-    assert edl["ranges"][0]["end"] >= 1.9
+    # First range must extend into the wait (~0.4s beat), not snap away
+    assert edl["ranges"][0]["end"] >= 1.35
 
 
 def test_retake_dropped():

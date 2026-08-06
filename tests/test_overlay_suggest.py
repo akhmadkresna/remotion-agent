@@ -27,6 +27,29 @@ def test_caps_scale_and_reserve_structure():
     assert long["target_total"] > short["target_total"]
     assert long["structure_reserve"] >= short["structure_reserve"]
     assert long["target_total"] >= long["structure_reserve"]
+    # Denser defaults (~1 / 40s): ~21m keep should ask for many stings
+    mid = caps_for_duration(1275)
+    assert mid["target_total"] >= 30
+    assert mid["emphasis"] >= 8
+
+
+def test_short_label_rejects_generic_speech_notes():
+    assert short_label("speech", fallback="Demo") == "Demo"
+    assert short_label("speech+wait-beat", fallback="Roadmap") == "Roadmap"
+    assert short_label("roadmap walkthrough") == "Roadmap"
+
+
+def test_punch_and_roadmap_boost_emphasis_score():
+    hit = {"text": "Roadmap", "start": 40.0, "end": 41.0, "phrase": "roadmap"}
+    base = score_emphasis(hit, screen_wins=[], punch_wins=[])
+    punched = score_emphasis(hit, screen_wins=[], punch_wins=[(39.0, 41.0)])
+    assert punched > base
+    other = score_emphasis(
+        {"text": "Status", "start": 40.0, "end": 41.0, "phrase": "status"},
+        screen_wins=[],
+        punch_wins=[],
+    )
+    assert base > other  # roadmap ranked / boosted over late singles
 
 
 def test_dwell_holds_from_style_are_readable():
@@ -42,8 +65,26 @@ def test_dwell_holds_from_style_are_readable():
     assert e2 - s2 >= holds["emphasis"] - 0.01
 
 
+def test_dwell_moves_to_keep_that_fits():
+    """Short overlapping keep → place chip in nearby keep that fits min_hold."""
+    ranges = [
+        {"source": "cam", "start": 10.0, "end": 11.0},
+        {"source": "cam", "start": 12.0, "end": 20.0},
+    ]
+    s, e = ensure_overlay_dwell(
+        10.2,
+        10.5,
+        kind="chip",
+        edl_ranges=ranges,
+        holds={"chip": 4.0, "min": 1.8},
+    )
+    assert s >= 12.0 - 1e-6
+    assert e - s >= 4.0 - 0.01
+    assert e <= 20.0 + 1e-6
+
+
 def test_short_label_curates_notes():
-    assert short_label("hook + plan: continue toko material, roadmap") == "Lanjut Toko Material"
+    assert short_label("hook + plan: continue toko material, roadmap") == "Roadmap"
     assert "Master Data" == short_label("phase 1 done: menus, res.partner, UDU check")
     assert short_label("purchase demo + status buttons + stock bug → diterima") == "Pembelian"
     assert short_label("not only toko material + phase 2 summary") == "Bukan Cuma Toko Material"
@@ -315,3 +356,63 @@ def test_structure_before_emphasis_and_curated_copy(tmp_path: Path):
     assert chapters
     assert all("res.partner" not in o["text"] or o["text"] == "Master Data" or len(o["text"]) < 40 for o in chapters)
     assert any(o["text"] in {"Lanjut Toko Material", "Master Data", "Pembelian"} for o in chapters)
+
+
+def test_punch_guarantee_places_mg_on_bare_punch(tmp_path: Path):
+    """Punch-in with no nearby payoff candidate still gets an emphasis sting."""
+    episode = tmp_path / "ep"
+    edit = episode / "edit"
+    edit.mkdir(parents=True)
+    (episode / "project.yaml").write_text(
+        "id: demo\nsources:\n  cam: raw/cam.mp4\nstyle: tutorial\n",
+        encoding="utf-8",
+    )
+    (edit / "edl.json").write_text(
+        json.dumps(
+            {
+                "sources": {"cam": "../raw/cam.mp4"},
+                "ranges": [
+                    {"source": "cam", "start": 0.0, "end": 30.0, "note": "hook"},
+                    {
+                        "source": "cam",
+                        "start": 1600.0,
+                        "end": 1720.0,
+                        "note": "mid restrict talk",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (edit / "cover.json").write_text(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "type": "punch_in",
+                        "start": 1660.0,
+                        "end": 1661.5,
+                        "note": "restrict",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    pairs: list[tuple[str, float, float]] = [
+        ("hook", 0.2, 0.6),
+        ("intro", 1.0, 1.4),
+        ("restrict", 1658.0, 1658.5),
+        ("akses", 1659.0, 1659.4),
+        ("user", 1659.5, 1659.9),
+    ]
+    _write_words(edit, pairs)
+
+    out = suggest_overlays(episode)
+    near = [
+        o
+        for o in out["overlays"]
+        if abs(float(o["start"]) - 1660.0) < 10.0
+    ]
+    assert near, "bare punch_in must get MG"
+    assert any(o["kind"] == "emphasis" for o in near)

@@ -129,7 +129,8 @@ def test_screen_bias_lowers_threshold():
 def test_style_radio_config_is_gap_class():
     cfg = load_style_radio_config("tutorial")
     assert cfg.get("wait_min_sec", cfg.get("hold_if_gap_sec")) >= 4.0
-    assert cfg["hold_sec"] <= 1.5
+    assert cfg["hold_sec"] <= 0.5
+    assert cfg.get("breath_max_sec", 0.6) <= 0.7
     assert cfg["cut_repeats"] is True
 
 

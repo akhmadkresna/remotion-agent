@@ -108,18 +108,56 @@ def test_quality_flags_timid_scales():
     assert any("max_hold_sec" in w for w in warnings)
 
 
-def test_quality_flags_overwide_float_crop():
+def test_quality_flags_overwide_float_crop_only_when_smart():
     tl = _base_timeline()
     tl["clips"][1]["windowCrop"] = {"x": 0.05, "y": 0.05, "w": 0.9, "h": 0.9}
+    # Default crop.mode none — no over-wide warn
+    _errors, warnings = audit_timeline_quality(tl)
+    assert not any("wider than" in w for w in warnings)
+    tl["presentation"] = {
+        "screenExplainer": {
+            "screen": {"crop": {"mode": "smart_window_detect"}},
+        }
+    }
     _errors, warnings = audit_timeline_quality(tl)
     assert any("wider than" in w for w in warnings)
 
 
-def test_quality_errors_missing_window_crop():
+def test_quality_errors_missing_window_crop_only_when_smart():
     tl = _base_timeline()
     del tl["clips"][1]["windowCrop"]
+    # mode none (default): float without crop is OK
+    errors, _warnings = audit_timeline_quality(tl)
+    assert not any("missing windowCrop" in e for e in errors)
+    tl["presentation"] = {
+        "screenExplainer": {
+            "screen": {"crop": {"mode": "smart_window_detect"}},
+        }
+    }
     errors, _warnings = audit_timeline_quality(tl)
     assert any("missing windowCrop" in e for e in errors)
+
+
+def test_quality_flags_dropped_overlay_ids():
+    tl = _base_timeline(
+        overlays=[
+            {
+                "id": "chip-open",
+                "kind": "chip",
+                "fromSec": 0.08,
+                "durationSec": 2.76,
+                "text": "Odoo Studio",
+            }
+        ]
+    )
+    cover = {
+        "overlays": [
+            {"id": "chip-open", "kind": "chip", "start": 1.0, "end": 4.0, "text": "ok"},
+            {"id": "gone", "kind": "emphasis", "start": 99.0, "end": 100.0, "text": "x"},
+        ]
+    }
+    errors, _warnings = audit_timeline_quality(tl, cover=cover)
+    assert any("missing from timeline after remap" in e for e in errors)
 
 
 def test_stable_window_crop_preferred(tmp_path: Path):

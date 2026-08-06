@@ -28,31 +28,31 @@ overlays:
     kickerSizeCqh: 2.4
     titleSizeCqh: 9
     leftCqw: 4.5
-    topCqh: 14
+    topCqh: 12
     maxWidthCqw: 42
   emphasis:
     sizeCqh: 16
     leftCqw: 4.5
-    bottomCqh: 16
+    bottomCqh: 28             # raised — was too low vs face/PIP
     underline: true
   diagram:
     leftCqw: 4.5
-    topCqh: 12
+    topCqh: 10
     maxWidthCqw: 40
     stepSizeCqh: 3.6
   chip:
     leftCqw: 4.5
-    topCqh: 12
+    topCqh: 10
     sizeCqh: 3.4
   safe:
     faceClear: true            # keep middle/face free
     zones: [left_third, lower_third]
-  # Framework default (ae overlay-suggest): couple MG to cover + camera_play
-  # - chapter/diagram: prefer screen_with_cam; else emit framing medium/wide
-  # - chip: prefer medium framing on full cam
-  # - emphasis: close OK; ID payoff lexicon + screen-enter score (best-fit)
-  # - structure reserved first; section quota on long screen windows
-  # - dwell long enough to read; Remotion fades out (not hard cut)
+  # Framework default (ae overlay-suggest): denser MG + punch coupling
+  # - ~1 sting / 32s keep; chapter gap ~50s; emphasis gap ~10s
+  # - quiet keep stretches >55s get gap-fill emphasis
+  # - punch_in (in EDL) without nearby MG gets a forced emphasis sting
+  # - chapter/diagram: prefer screen_with_cam; else framing medium/wide
+  # - emphasis: close OK; ID payoff + screen-enter + punch score; bottomCqh 28
 punch_in:
   scale: 1.28
   defaultDurationSec: 1.35
@@ -68,12 +68,12 @@ camera_play:
     medium: 1.22
     close: 1.42
 # Smart radio-edit (ae edl-suggest): clause + gap-class — NOT silence packing.
-# breath/think pauses stay; only long AI waits compress to a hold beat.
+# breath stays; think hard-cuts; long AI waits compress to a short hold beat.
 radio_edit:
-  breath_max_sec: 1.2
+  breath_max_sec: 0.6
   wait_min_sec: 5.0         # gaps ≥ this → AI wait compress
   activity_wait_min_sec: 3.5
-  hold_sec: 1.0             # visible beat (hold_tail survives word-snap)
+  hold_sec: 0.4             # visible beat (hold_tail survives word-snap)
   min_keep_sec: 0.90
   pad_before_sec: 0.08
   pad_after_sec: 0.12
@@ -132,14 +132,11 @@ screen_explainer:
     presentation: float_centered
     widthRatio: 0.78            # cozy
     maxHeightRatio: 0.82
-    borderRadiusPx: 12
+    borderRadiusPx: 24          # soft round
     shadow: soft_float
-    objectFit: fill
+    objectFit: cover            # clean full-frame screen footage
     crop:
-      mode: smart_window_detect
-      analysisMaxWidth: 480
-      chromeSideInsetFracMax: 0.12
-      windowRelativePad: 0.003
+      mode: none               # no smart_window_detect — supply clean screen raw
   pip:
     anchor: stage_lower_right   # frame corner — not nested inside screen
     widthRatio: 0.18
@@ -157,19 +154,18 @@ screen_explainer:
 | Mode | When | Visual | Audio |
 |------|------|--------|-------|
 | Full cam | Default / no screen activity | Cam + `camera_play` framing | Cam |
-| Screen + soft-float PIP | Deixis keywords **and** screen activity (see `ae cover-suggest`) | Cool-mist canvas, **cozy** floated screen (smart window crop) + cam PIP at **stage lower-right** | Cam only |
+| Screen + soft-float PIP | Deixis keywords **and** screen activity (see `ae cover-suggest`) | Cool-mist canvas, **cozy** floated screen (soft round, full frame) + cam PIP at **stage lower-right** | Cam only |
 
 Agents must load these defaults when `project.yaml` has `style: tutorial` (framework default).
 
 | Layer | Locked look |
 |-------|-------------|
 | A-roll MG (chapter / emphasis / diagram / chip) | **Bold** type + accent `#7dd3fc` (cool mist sky) |
-| Screen + PIP stage | Cool-mist canvas `#d9e2ec` + cozy float |
+| Screen + PIP stage | Cool-mist canvas `#d9e2ec` + cozy float (soft round, no smart crop) |
 
 Run `ae cover-suggest .` after the EDL is confirmed when a `screen` source exists.
-Screen crop is **dynamic** (`smart_window_detect`) — never hardcode left/right % for one episode.
-When a verified crop exists, compose **prefers** `edit/window_crop.json` `stable` over per-clip
-detect (per-clip often leaks desktop chrome and looks “not smart”).
+Supply **clean** screen footage (already cropped / no desktop chrome). Float uses
+`crop.mode: none` + soft `borderRadiusPx` — do not hardcode per-episode crop %.
 Do not fork overlay colors/fonts per episode — promote changes into this style pack.
 
 **Draft review:** use `ae draft . --seconds 120 --render` (fromSec-safe slice + quality gates).

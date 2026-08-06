@@ -4,13 +4,15 @@ Past misses this gates against:
 1. Draft / slice dropping overlays (looked for start/end instead of fromSec)
 2. Timid camera_play scales that read as no multicam
 3. Soft punch_in effects
-4. Float screen without windowCrop / over-wide crop (desktop chrome)
+4. Float screen without windowCrop when smart_window_detect is on
 5. cover.json overlays that never land on the output timeline
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+from agentic_editor.cover.remap import collect_overlay_defs
 
 
 # Tutorial look: close must read as a second camera, not a 2% nudge.
@@ -20,6 +22,12 @@ MIN_PUNCH_SCALE = 1.22
 MAX_HOLD_WARN_SEC = 12.0
 # Cozy float is ~0.78 of frame; wider usually means desktop chrome leaked in.
 MAX_FLOAT_CROP_WIDTH = 0.82
+
+
+def _crop_mode(timeline: dict[str, Any]) -> str:
+    se = (timeline.get("presentation") or {}).get("screenExplainer") or {}
+    crop = (se.get("screen") or {}).get("crop") or {}
+    return str(crop.get("mode") or "none").strip().lower()
 
 
 def audit_timeline_quality(
@@ -78,28 +86,30 @@ def audit_timeline_quality(
             "(barely visible)"
         )
 
+    crop_mode = _crop_mode(timeline)
     floats = [c for c in clips if c.get("layout") == "float_centered"]
-    missing_crop = [c for c in floats if not isinstance(c.get("windowCrop"), dict)]
-    if floats and missing_crop:
-        errors.append(
-            f"{len(missing_crop)}/{len(floats)} float_centered clip(s) missing "
-            "windowCrop — run ae compose (prefers edit/window_crop.json stable)"
-        )
-    over_wide = []
-    for c in floats:
-        crop = c.get("windowCrop") or {}
-        try:
-            w = float(crop.get("w") or 0)
-        except (TypeError, ValueError):
-            w = 0.0
-        if w > MAX_FLOAT_CROP_WIDTH:
-            over_wide.append(c.get("id") or "?")
-    if over_wide:
-        warnings.append(
-            f"{len(over_wide)} float crop(s) wider than {MAX_FLOAT_CROP_WIDTH} "
-            f"(e.g. {over_wide[0]}) — likely desktop chrome; prefer stable "
-            "edit/window_crop.json"
-        )
+    if crop_mode == "smart_window_detect":
+        missing_crop = [c for c in floats if not isinstance(c.get("windowCrop"), dict)]
+        if floats and missing_crop:
+            errors.append(
+                f"{len(missing_crop)}/{len(floats)} float_centered clip(s) missing "
+                "windowCrop — run ae compose (prefers edit/window_crop.json stable)"
+            )
+        over_wide = []
+        for c in floats:
+            crop = c.get("windowCrop") or {}
+            try:
+                w = float(crop.get("w") or 0)
+            except (TypeError, ValueError):
+                w = 0.0
+            if w > MAX_FLOAT_CROP_WIDTH:
+                over_wide.append(c.get("id") or "?")
+        if over_wide:
+            warnings.append(
+                f"{len(over_wide)} float crop(s) wider than {MAX_FLOAT_CROP_WIDTH} "
+                f"(e.g. {over_wide[0]}) — likely desktop chrome; prefer stable "
+                "edit/window_crop.json"
+            )
 
     cover_overlays = list((cover or {}).get("overlays") or [])
     if cover_overlays and not overlays:
@@ -108,8 +118,16 @@ def audit_timeline_quality(
             "is empty — remap failed or draft slice dropped fromSec items"
         )
     elif cover_overlays:
+        defs = collect_overlay_defs(cover)
+        tl_ids = {str(o.get("id") or "") for o in overlays}
+        dropped = [d for d in defs if d["id"] not in tl_ids]
+        if dropped:
+            sample = ", ".join(d["id"] for d in dropped[:3])
+            errors.append(
+                f"{len(dropped)} cover overlay(s) missing from timeline after remap "
+                f"(e.g. {sample}) — outside EDL keeps or zero intersection"
+            )
         # Opening chip / early MG should usually appear in the first few seconds
-        # when cover defines overlays that start near source t≈0–5 after remap.
         early = [
             o
             for o in overlays

@@ -19,11 +19,10 @@
 - A-roll MG (`overlays`): **Bold** type + accent **cool mist sky** `#7dd3fc` — no glass cards, no full/karaoke captions
 - Screen stage (`screen_explainer`): preset **cozy** (screen width 78%), canvas **cool mist** `#d9e2ec`
 - PIP: no border, stage lower-right (not nested in the screen window)
-- Crop: `smart_window_detect` (`cover/window_crop.py`) — dynamic window bbox; compose prefers
-  verified `edit/window_crop.json` `stable` when present (avoids over-wide desktop chrome)
+- Crop: `none` — supply clean full-frame screen footage; float uses soft round (`borderRadiusPx: 24`) + `objectFit: cover`
 - Tokens load via `style_load.load_overlays` / `load_screen_explainer` → `timeline.presentation`
-- **Quality gates** on `ae compose` / `ae draft`: missing remapped overlays, float without
-  `windowCrop`, timid camera scales, soft punches, over-wide crops
+- **Quality gates** on `ae compose` / `ae draft`: missing remapped overlays, timid camera scales, soft punches
+  (windowCrop required only if `crop.mode` is `smart_window_detect`)
 - **Draft:** `ae draft . --seconds 120 [--render]` — fromSec-safe slice (do not hand-trim props)
 
 ## A-roll MG overlays

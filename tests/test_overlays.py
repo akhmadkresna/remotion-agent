@@ -80,8 +80,54 @@ def test_overlay_cut_out_of_edl_dropped():
     assert build_timeline_overlays(edl, cover) == []
 
 
+def test_overlay_spanning_gap_keeps_longest_slice():
+    """EDL holes must not blink multi-instances or drop the MG entirely."""
+    edl = {
+        "ranges": [
+            {"source": "cam", "start": 0.0, "end": 10.0},
+            {"source": "cam", "start": 20.0, "end": 30.0},
+        ]
+    }
+    cover = {
+        "overlays": [
+            {
+                "id": "ch-1",
+                "kind": "chapter",
+                "start": 8.0,
+                "end": 24.0,
+                "text": "Across cut",
+                "kicker": "Chapter 01",
+            }
+        ]
+    }
+    # Remap yields 2s + 4s; pick longest only
+    ov = build_timeline_overlays(edl, cover)
+    assert len(ov) == 1
+    assert ov[0]["id"] == "ch-1"
+    assert abs(ov[0]["fromSec"] - 10.0) < 1e-6  # second keep: 20-24 → out 10-14
+    assert ov[0]["durationSec"] >= 4.0
+
+
+def test_overlay_sole_short_slice_not_dropped():
+    edl = {
+        "ranges": [{"source": "cam", "start": 0.0, "end": 10.0}],
+    }
+    cover = {
+        "overlays": [
+            {"id": "em-1", "kind": "emphasis", "start": 9.7, "end": 10.0, "text": "API"},
+        ]
+    }
+    ov = build_timeline_overlays(edl, cover)
+    assert len(ov) == 1
+    assert ov[0]["id"] == "em-1"
+    # dwell floor for emphasis, clamped to remaining timeline (0.3s left)
+    assert ov[0]["durationSec"] <= 0.3 + 1e-6
+    assert ov[0]["durationSec"] >= 0.05
+
+
 def test_chapter_note_and_title_helpers():
     assert CHAPTER_NOTE_RE.search("fase 2 setup")
     # curated short labels (not raw note dumps)
     assert _clean_title("hook: Extend kontak") == "Lanjut Toko Material"
+    assert _clean_title("hook + plan: continue toko material, roadmap") == "Roadmap"
     assert _clean_title("phase 1 done menus") == "Master Data"

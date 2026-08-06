@@ -1,11 +1,12 @@
 """Smart radio-edit EDL suggest (clause + gap-class + AV wait compression).
 
-Architecture (do not regress to silence-as-discourse):
+Architecture:
   1. Build **clauses** from ASR segments (fallback: word phrases)
   2. Classify each inter-clause gap: breath / think / ai_wait / retake
-  3. breath+think → stay inside the keep (never shred mid-thought)
-  4. ai_wait → compress to a short beat with a **hold tail** (survives snap)
-  5. retake → drop the inferior duplicate clause
+  3. breath → stay inside the keep (short natural pause only)
+  4. think → **hard cut** (no hold beat) — tighter pacing
+  5. ai_wait → compress to a short beat with a **hold tail** (survives snap)
+  6. retake → drop the inferior duplicate clause
 
 Always writes ``edit/edl.suggest.json`` — confirm before ``--apply`` / ``ae cut``.
 """
@@ -34,9 +35,9 @@ from agentic_editor.project import load_project
 
 DEFAULT_RADIO_CFG: dict[str, Any] = {
     # Gap-class policy (primary)
-    "breath_max_sec": 1.2,
+    "breath_max_sec": 0.6,
     "wait_min_sec": 5.0,
-    "hold_sec": 1.0,
+    "hold_sec": 0.4,
     "activity_wait_min_sec": 3.5,
     # Hygiene
     "min_keep_sec": 0.90,
@@ -186,7 +187,7 @@ def clauses_from_segments(
     source_start: float | None = None,
     source_end: float | None = None,
 ) -> list[dict[str, Any]]:
-    """ASR segments are discourse units — better than silence packing."""
+    """ASR segments are discourse units — better than silence packing when healthy."""
     clauses: list[dict[str, Any]] = []
     for seg in segments:
         s, e = float(seg["start"]), float(seg["end"])
@@ -204,6 +205,138 @@ def clauses_from_segments(
     return clauses
 
 
+# Whisper sometimes emits multi-minute segments with almost no speech inside.
+_MAX_TRUSTED_SEGMENT_SEC = 12.0
+_MIN_SEGMENT_SPEECH_COVERAGE = 0.30
+_MAX_INTERNAL_WORD_GAP_SEC = 1.5
+
+
+def _normalize_word_rows(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for w in words:
+        try:
+            s, e = float(w["start"]), float(w["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if e <= s:
+            continue
+        text = str(w.get("text") or w.get("word") or "").strip()
+        out.append(
+            {
+                "type": "word",
+                "text": text,
+                "word": text,
+                "start": s,
+                "end": e,
+            }
+        )
+    out.sort(key=lambda w: float(w["start"]))
+    return out
+
+
+def _words_in_window(
+    words: list[dict[str, Any]], start: float, end: float
+) -> list[dict[str, Any]]:
+    return [
+        w
+        for w in words
+        if float(w["end"]) > start + 1e-4 and float(w["start"]) < end - 1e-4
+    ]
+
+
+def _segment_needs_word_split(
+    start: float,
+    end: float,
+    words_in: list[dict[str, Any]],
+) -> bool:
+    span = end - start
+    if span <= 0.12:
+        return False
+    if not words_in:
+        # Empty speech inside a long segment → drop via split producing nothing
+        return span > _MAX_TRUSTED_SEGMENT_SEC
+    spoken = sum(float(w["end"]) - float(w["start"]) for w in words_in)
+    coverage = spoken / span
+    max_gap = 0.0
+    for a, b in zip(words_in, words_in[1:]):
+        max_gap = max(max_gap, float(b["start"]) - float(a["end"]))
+    if span > _MAX_TRUSTED_SEGMENT_SEC and coverage < _MIN_SEGMENT_SPEECH_COVERAGE:
+        return True
+    if max_gap >= _MAX_INTERNAL_WORD_GAP_SEC:
+        return True
+    if coverage < _MIN_SEGMENT_SPEECH_COVERAGE and span > 4.0:
+        return True
+    return False
+
+
+def clauses_from_segments_refined(
+    segments: list[dict[str, Any]],
+    words: list[dict[str, Any]],
+    *,
+    silence_gap_sec: float = 0.6,
+    source_start: float | None = None,
+    source_end: float | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Use ASR segments when healthy; split pathological ones on word gaps.
+
+    Faster-whisper sometimes stamps one short phrase across minutes of silence
+    (AI wait). Gap-class only sees *inter*-clause silence, so those holes must
+    be split before classify.
+    """
+    word_rows = _normalize_word_rows(words)
+    stats = {"segments_kept": 0, "segments_split": 0, "segments_empty": 0}
+    if not word_rows:
+        return (
+            clauses_from_segments(
+                segments, source_start=source_start, source_end=source_end
+            ),
+            stats,
+        )
+
+    clauses: list[dict[str, Any]] = []
+    for seg in segments:
+        s, e = float(seg["start"]), float(seg["end"])
+        if source_start is not None:
+            s = max(s, float(source_start))
+        if source_end is not None:
+            e = min(e, float(source_end))
+        if e - s < 0.12:
+            continue
+        text = str(seg.get("text") or "").strip()
+        win = _words_in_window(word_rows, s, e)
+        if _segment_needs_word_split(s, e, win):
+            stats["segments_split"] += 1
+            if not win:
+                stats["segments_empty"] += 1
+                continue
+            split = clauses_from_words(
+                win,
+                silence_gap_sec=silence_gap_sec,
+                source_start=source_start,
+                source_end=source_end,
+            )
+            clauses.extend(split)
+            continue
+        # Healthy: snap clause to spoken word bounds (drop trailing quiet)
+        if win:
+            s = float(win[0]["start"])
+            e = float(win[-1]["end"])
+            if not text:
+                text = " ".join(
+                    str(w.get("text") or w.get("word") or "").strip()
+                    for w in win
+                    if str(w.get("text") or w.get("word") or "").strip()
+                )
+        if e - s < 0.12:
+            continue
+        stats["segments_kept"] += 1
+        clauses.append({"start": s, "end": e, "text": text, "note": "speech"})
+
+    # Deduplicate / merge tiny overlaps from adjacent splits
+    clauses.sort(key=lambda c: float(c["start"]))
+    return clauses, stats
+
+
 def clauses_from_words(
     words: list[dict[str, Any]],
     *,
@@ -211,21 +344,7 @@ def clauses_from_words(
     source_start: float | None = None,
     source_end: float | None = None,
 ) -> list[dict[str, Any]]:
-    pack_words = []
-    for w in words:
-        try:
-            s, e = float(w["start"]), float(w["end"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        pack_words.append(
-            {
-                "type": "word",
-                "text": w.get("text") or w.get("word") or "",
-                "word": w.get("text") or w.get("word") or "",
-                "start": s,
-                "end": e,
-            }
-        )
+    pack_words = _normalize_word_rows(words)
     phrases = group_into_phrases(pack_words, silence_threshold=silence_gap_sec)
     if source_start is not None or source_end is not None:
         s0 = float(source_start if source_start is not None else 0.0)
@@ -304,9 +423,9 @@ def suggest_edl_from_words(
     segments: list[dict[str, Any]] | None = None,
     activity_bins: list[dict[str, Any]] | None = None,
     # Gap-class policy
-    breath_max_sec: float = 1.2,
+    breath_max_sec: float = 0.6,
     wait_min_sec: float = 5.0,
-    hold_sec: float = 1.0,
+    hold_sec: float = 0.4,
     activity_wait_min_sec: float = 3.5,
     # Hygiene
     min_keep_sec: float = 0.90,
@@ -331,7 +450,8 @@ def suggest_edl_from_words(
     Build keep ranges with gap-class logic.
 
     Invariants:
-      - Never hard-cut a think/breath pause (mid-thought stays)
+      - Breath pauses stay inside the keep
+      - Think gaps hard-cut (no hold) for tight pacing
       - AI waits compress to ``hold_sec`` with hold_tail (visible beat)
       - Retakes / near-duplicates dropped
     """
@@ -347,7 +467,17 @@ def suggest_edl_from_words(
         activity_wait_min=activity_wait_min_sec,
     )
 
-    if segments:
+    refine_stats: dict[str, int] = {}
+    if segments and words:
+        clauses, refine_stats = clauses_from_segments_refined(
+            segments,
+            words,
+            silence_gap_sec=silence_gap_sec,
+            source_start=source_start,
+            source_end=source_end,
+        )
+        unit = "segment+word"
+    elif segments:
         clauses = clauses_from_segments(
             segments, source_start=source_start, source_end=source_end
         )
@@ -369,6 +499,7 @@ def suggest_edl_from_words(
         cut_wait_speech=cut_wait_speech,
         wait_speech_max_sec=wait_speech_max_sec,
     )
+    filter_stats = {**refine_stats, **filter_stats}
 
     class_counts = {c.value: 0 for c in GapClass}
     if not clauses:
@@ -400,12 +531,28 @@ def suggest_edl_from_words(
         )
         class_counts[gclass.value] += 1
 
-        if gclass in (GapClass.BREATH, GapClass.THINK):
-            # Keep the pause — natural speech continuity
+        if gclass == GapClass.BREATH:
+            # Keep short natural pause inside the keep
             cur_end = max(cur_end, nxt_end)
             continue
 
         if gclass == GapClass.RETAKE:
+            continue
+
+        if gclass == GapClass.THINK:
+            # Hard cut — jump to next clause with no hold beat
+            ranges.append(
+                {
+                    "source": source,
+                    "start": cur_start,
+                    "end": cur_end,
+                    "note": cur_note,
+                    "_hold_tail": cur_hold_tail,
+                }
+            )
+            cur_start, cur_end = nxt_start, nxt_end
+            cur_note = str(nxt.get("note") or "speech")
+            cur_hold_tail = False
             continue
 
         # AI_WAIT → compress: keep short beat after last speech, then jump
@@ -560,7 +707,7 @@ def suggest_edl(
         sources=edl_sources or {"cam": "../raw/cam.mp4"},
         segments=segments or None,
         activity_bins=activity_bins,
-        breath_max_sec=float(radio.get("breath_max_sec", 1.2)),
+        breath_max_sec=float(radio.get("breath_max_sec", 0.6)),
         wait_min_sec=float(radio.get("wait_min_sec", 5.0)),
         hold_sec=float(radio["hold_sec"]),
         activity_wait_min_sec=float(radio.get("activity_wait_min_sec", 3.5)),

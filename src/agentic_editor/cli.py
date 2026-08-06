@@ -322,8 +322,8 @@ def cmd_overlay_suggest(args: argparse.Namespace) -> int:
         )
     print("Propose/adjust with the user, then confirm before writing cover.json.")
     print(
-        "After confirm: merge overlays[] + framing companions into cover.json events[], "
-        "then: ae cover ."
+        "After confirm: ae overlay-suggest . --apply  "
+        "(writes cover.json overlays + framing, rebuilds timeline.json)"
     )
     if args.apply and overlays:
         from agentic_editor.cover.overlay_suggest import merge_framing_into_events
@@ -343,6 +343,49 @@ def cmd_overlay_suggest(args: argparse.Namespace) -> int:
             f"Wrote overlays + {len(framing_events)} framing companion(s) into "
             f"{cover_path.relative_to(episode)} (--apply)"
         )
+        # Rebuild timeline so Studio/compose props are not stale
+        edl_path = episode / "edit" / "edl.json"
+        if edl_path.is_file():
+            cfg = load_project(episode)
+            edl = load_edl(edl_path)
+            sources: dict[str, str] = {}
+            for name, rel in (cfg.get("sources") or {}).items():
+                p = Path(rel)
+                sources[name] = str(
+                    (episode / p).resolve() if not p.is_absolute() else p
+                )
+            edit = episode / "edit"
+            for name, rel in edl["sources"].items():
+                sources.setdefault(
+                    name,
+                    str(
+                        (edit / rel).resolve()
+                        if not Path(rel).is_absolute()
+                        else rel
+                    ),
+                )
+            edl["sources"] = sources
+            style_name = str(cfg.get("style") or "tutorial")
+            timeline = build_timeline_from_edl_and_cover(
+                edl,
+                cover,
+                fps=int(cfg.get("fps", 30)),
+                width=int(cfg.get("width", 1920)),
+                height=int(cfg.get("height", 1080)),
+                screen_explainer=load_screen_explainer(style_name),
+                overlays=load_overlays(style_name),
+            )
+            tl_path = edit / "timeline.json"
+            write_timeline(tl_path, timeline)
+            n_ov = len(timeline.get("overlays") or [])
+            print(
+                f"Rebuilt {tl_path.relative_to(episode)} "
+                f"({n_ov} timeline overlay(s))"
+            )
+        else:
+            print(
+                "Note: no edit/edl.json — skipped timeline rebuild; run ae cover after EDL"
+            )
     return 0
 
 
@@ -383,7 +426,12 @@ def cmd_compose(args: argparse.Namespace) -> int:
     if args.prepare_only:
         prepare_compose(episode)
         return 0
-    out = render_compose(episode, output=Path(args.output) if args.output else None)
+    out = render_compose(
+        episode,
+        output=Path(args.output) if args.output else None,
+        nvenc=bool(args.nvenc),
+        gl=args.gl,
+    )
     print(f"Wrote {out}")
     return 0
 
@@ -398,6 +446,8 @@ def cmd_draft(args: argparse.Namespace) -> int:
             limit_sec=limit,
             output=Path(args.output) if args.output else None,
             jpeg_quality=int(args.jpeg_quality),
+            nvenc=bool(getattr(args, "nvenc", False)),
+            gl=getattr(args, "gl", None),
         )
         print(f"Wrote {out}")
         return 0
@@ -456,7 +506,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     es = sub.add_parser(
         "edl-suggest",
-        help="Suggest silence-cut EDL from cam transcript (confirm before apply/cut)",
+        help="Suggest gap-class EDL from cam transcript (breath keep, think cut; confirm before apply)",
     )
     es.add_argument("episode", nargs="?", default=".")
     es.add_argument(
@@ -562,6 +612,17 @@ def build_parser() -> argparse.ArgumentParser:
     com.add_argument("--studio", action="store_true")
     com.add_argument("--prepare-only", action="store_true")
     com.add_argument("-o", "--output")
+    com.add_argument(
+        "--nvenc",
+        action="store_true",
+        help="Use NVIDIA NVENC encode if ffmpeg with h264_nvenc is available",
+    )
+    com.add_argument(
+        "--gl",
+        choices=("angle", "egl", "swiftshader", "vulkan", "angle-egl"),
+        default=None,
+        help="Chrome GL backend for faster frame render (Windows: try angle)",
+    )
     com.set_defaults(func=cmd_compose)
 
     dr = sub.add_parser(
@@ -587,6 +648,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Draft render JPEG quality (default 70)",
     )
     dr.add_argument("-o", "--output", help="Draft mp4 path (with --render)")
+    dr.add_argument(
+        "--nvenc",
+        action="store_true",
+        help="Use NVIDIA NVENC encode when rendering draft",
+    )
+    dr.add_argument(
+        "--gl",
+        choices=("angle", "egl", "swiftshader", "vulkan", "angle-egl"),
+        default=None,
+        help="Chrome GL backend (Windows: try angle)",
+    )
     dr.set_defaults(func=cmd_draft)
 
     qa = sub.add_parser("qa", help="Extract cut-boundary frames from preview.mp4")

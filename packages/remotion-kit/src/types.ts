@@ -97,6 +97,30 @@ export type OverlayStyle = {
   ink?: string;
   dim?: string;
   fonts?: { display?: string; ui?: string };
+  chapter?: {
+    leftCqw?: number;
+    topCqh?: number;
+    maxWidthCqw?: number;
+    kickerSizeCqh?: number;
+    titleSizeCqh?: number;
+  };
+  emphasis?: {
+    leftCqw?: number;
+    bottomCqh?: number;
+    sizeCqh?: number;
+    underline?: boolean;
+  };
+  diagram?: {
+    leftCqw?: number;
+    topCqh?: number;
+    maxWidthCqw?: number;
+    stepSizeCqh?: number;
+  };
+  chip?: {
+    leftCqw?: number;
+    topCqh?: number;
+    sizeCqh?: number;
+  };
 };
 
 export const DEFAULT_OVERLAY_STYLE: OverlayStyle = {
@@ -110,6 +134,10 @@ export const DEFAULT_OVERLAY_STYLE: OverlayStyle = {
     display: "Syne",
     ui: "Instrument Sans",
   },
+  chapter: { leftCqw: 4.5, topCqh: 12, maxWidthCqw: 42 },
+  emphasis: { leftCqw: 4.5, bottomCqh: 28, sizeCqh: 16, underline: true },
+  diagram: { leftCqw: 4.5, topCqh: 10, maxWidthCqw: 40 },
+  chip: { leftCqw: 4.5, topCqh: 10, sizeCqh: 3.4 },
 };
 
 export type Timeline = {
@@ -158,8 +186,8 @@ export const DEFAULT_SCREEN_EXPLAINER: ScreenExplainerStyle = {
     presentation: "float_centered",
     widthRatio: 0.78,
     maxHeightRatio: 0.82,
-    borderRadiusPx: 12,
-    objectFit: "fill",
+    borderRadiusPx: 24,
+    objectFit: "cover",
   },
   pip: {
     anchor: "stage_lower_right",

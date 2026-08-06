@@ -29,21 +29,18 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
 2. Never cut mid-word; snap to transcript word boundaries; pad 30–200ms.
 3. `ae cut` applies 30ms audio fades per segment — do not skip.
 4. Cache transcripts — never re-ASR unless source changed (`ae ingest --force`).
-5. All outputs in `edit/`. Raw footage is read-only — never hardlink `raw/` into
-   Remotion `public/` (overwrite would clobber masters). Staging always **copies**.
+5. All outputs in `edit/`. Raw footage is read-only.
 6. Local ASR only: `auto` → whisper.cpp (darwin) / faster-whisper (else).
    Default language is **Indonesian** (`asr.language: id`); override per episode for other languages.
 7. Promote reusable changes into `$AGENTIC_EDITOR_HOME`, not episode copies.
 8. Remotion Studio: **only** via `ae compose . --studio` (stages `public/ae-media` + `--props`).
    Never start `remotion studio` bare — that shows a black empty timeline. Absolute `/Users/...`
    media paths will not load in the browser.
-9. If raw ≫ deliverable (e.g. 1440p60 multi‑GB vs project 1080p30): `ae mezzanine .`
-   then compose — CRF16 mezzanines in `edit/mezzanine/`; does not reduce YouTube quality.
-10. **Audio always from cam.** Screen is visual-only (muted). Prefer `screen_with_cam` for UI demos.
-11. **Locked look (`style: tutorial`):** A-roll MG = **Bold** type + accent `#7dd3fc` (cool mist sky).
+9. **Audio always from cam.** Screen is visual-only (muted). Prefer `screen_with_cam` for UI demos.
+10. **Locked look (`style: tutorial`):** A-roll MG = **Bold** type + accent `#7dd3fc` (cool mist sky).
     Screen stage = cool-mist canvas. No full/karaoke captions. Do not invent episode-local
     colors/fonts — change `styles/tutorial/style.md` (+ `style_load.py` / remotion-kit theme) instead.
-12. **MG overlays:** after EDL (and preferably cover) is confirmed, run `ae overlay-suggest .`,
+11. **MG overlays:** after EDL (and preferably cover) is confirmed, run `ae overlay-suggest .`,
     propose the plan, **wait for confirm**, then write `cover.json` `overlays[]` **and** any
     companion `framing` events (or `ae overlay-suggest . --apply` only after confirm).
     Never invent timings mid-word. **Default:** overlay plan is gated by cover mode +
@@ -51,40 +48,30 @@ Framework code is invoked via `ae` / `$AGENTIC_EDITOR_HOME`. Use a multi-root
     emit medium/wide framing companions so MG does not fight close zooms (`faceClear` /
     left_third). Emphasis may sit on close. Structure (chip/chapter/diagram + section
     quotas) is reserved first; emphasis is best-fit from an ID payoff lexicon scored by
-    screen-enter. Gaps ~90s / ~25s; density ~1 sting / 70s keep.
+    screen-enter + punch proximity (punchy cam without nearby MG gets seeded emphasis).
+    Gaps ~50s chapter / ~10s emphasis; density ~1 sting / 32s keep; same-label min gap ~45s
+    (keeps “Roadmap” etc. from spam). Quiet keep stretches >55s get gap-fill. Emphasis
+    `bottomCqh` default **28** (was too low vs PIP).
 
 ## Process
 
 1. **Inventory** — `ae ingest .` → `edit/takes_packed.md`
 2. **Converse** — describe material; ask shaped questions
 3. **Propose** radio-edit strategy (4–8 sentences) → **wait for confirm**
-4. **EDL suggest** — `ae edl-suggest .` (gap-class: breath/think keep, AI-wait compress, retake drop; style `radio_edit.*`) → review `_meta.gap_classes` + `edit/edl.suggest.json`
-   → confirm → `--apply` or write `edit/edl.json`
+4. **Write** `edit/edl.json` (`sources` + `ranges[]` with `source`/`start`/`end`)
 5. **Cut** — `ae cut .` → `edit/preview.mp4`
 6. **Cover** (if `sources.screen` exists):
-   - Run `ae cover-suggest .` (tutorial default **`prefer_screen`**) → review `edit/cover.suggest.json`
-   - Propose full-cam vs `screen_with_cam` → **wait for confirm**
+   - Run `ae cover-suggest .` → review `edit/cover.suggest.json`
+   - Propose full-cam vs `screen_with_cam` ranges (formula below) → **wait for confirm**
    - Write `edit/cover.json` → `ae cover .`
-   - Stricter gate: `ae cover-suggest . --mode balanced`
 6b. **Overlays (A-roll MG)** — chapter / emphasis / diagram / chip:
    - Run `ae overlay-suggest .` → `edit/overlays.suggest.json` (includes `framing_events`)
-   - Propose sparse Bold-mist plan synced to cover + zoom → **wait for confirm**
-   - Dwell must be readable (`overlays.dwell`; fade-out in Remotion) — do not accept ~1s pops
+    - Propose dense Bold-mist plan synced to cover + zoom/punch → **wait for confirm**
    - Write `cover.json` `overlays[]` + merge companion `framing` into `events[]`
      (source-time, word-snapped) → `ae cover .` / `ae compose .`
-6c. **Mezzanine** (if raw is multi‑GB / higher than project res/fps) — `ae mezzanine .`
-6d. **Draft review** — `ae draft . --seconds 120 --render` (quality gates; never hand-slice props)
 7. **Compose** — `ae compose . --studio` or render
 8. **QA** — `ae qa .` inspect `edit/verify/` cut frames
 9. **Iterate** — natural language; never re-transcribe casually
-
-### Why drafts used to look broken (framework gates)
-
-| Miss | Cause | Gate now |
-|------|-------|----------|
-| No opening chip / OverlayLayer | Draft trim used `start`/`end`; overlays are `fromSec`/`durationSec` | `ae draft` + `slice_timeline` |
-| Soft / boring zoom | Default scales 1.1/1.18; punches disabled for whole ep if any float existed | Punchier defaults; frame-aware punchScale; quality WARN |
-| “Dumb” screen crop | Per-clip detect wider than verified window | Prefer `edit/window_crop.json` stable; ERROR if float lacks crop |
 
 ## EDL shape
 
@@ -108,20 +95,18 @@ Paths in EDL are relative to `edit/`.
     "home": "medium",
     "alt": "close",
     "wide_on_resets": true,
-    "max_hold_sec": 7,
-    "scales": { "wide": 1.0, "medium": 1.22, "close": 1.42 }
+    "max_hold_sec": 16,
+    "scales": { "wide": 1.0, "medium": 1.1, "close": 1.18 }
   },
   "events": [
     { "type": "framing", "start": 10.0, "end": 18.0, "framing": "close", "motion": "ease" },
-    { "type": "punch_in", "start": 35.5, "end": 41.0, "scale": 1.28 },
+    { "type": "punch_in", "start": 35.5, "end": 41.0, "scale": 1.12 },
     { "type": "screen_with_cam", "start": 14.0, "end": 42.0, "note": "demo UI" }
   ],
   "captions": []
 }
 ```
 
-Default scales are punchy on purpose (`close` ≥ 1.32). Soft scales (1.1 / 1.18) fail the
-compose quality **warning** gate — multicam will look like no cut at all.
 ### Overlay shape (`cover.json` → remapped in `timeline.overlays`)
 
 ```json
